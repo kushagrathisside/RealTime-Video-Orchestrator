@@ -37,14 +37,14 @@ real video inference.
    Tests should use fresh signals, and the event engine should not divide by
    zero when duration is zero.
 
-7. Make clip creation safe when the frame buffer is empty.
+7. Fixed: make clip creation safe when the frame buffer is empty.
    Event-triggered clip extraction should drop or defer evidence instead of
    panicking.
 
 8. Fixed: increment emitted-event metrics.
    The metric exists but is not updated when an event fires.
 
-9. Return frame slices in chronological order.
+9. Fixed: return frame slices in chronological order.
    Circular-buffer storage order is not the same as timestamp order.
 
 10. Make config reload non-fatal.
@@ -307,6 +307,8 @@ Applied fix:
 
 ### Clip Manager Can Panic On Empty Frame Buffer
 
+Status: fixed in source.
+
 `ClipManager::on_event` calls:
 
 ```rust
@@ -321,10 +323,13 @@ This can happen if:
 - the camera failed to open
 - a detector emits signals without requiring frames
 
-Required fix:
+Applied fix:
 
 - return `Option<Instant>` from `newest_instant`
-- drop or defer clip creation if no frames are available
+- drop clip creation if no frames are available
+
+Remaining:
+
 - emit a metric for missed evidence
 
 ### Post-Roll Clips Are Not Actually Captured
@@ -359,11 +364,13 @@ Applied fix:
 
 ### Frame Buffer Slice Is Not Chronologically Ordered
 
+Status: fixed in source.
+
 `FrameBuffer::slice` scans slots in storage order, not time order. Since the
 buffer is overwritten circularly, returned frames may not be ordered by
 timestamp.
 
-Required fix:
+Applied fix:
 
 - sort the output by `Frame.ts`
 - or iterate from the oldest slot to newest slot

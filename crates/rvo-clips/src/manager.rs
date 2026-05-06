@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crossbeam_channel::{Sender, TrySendError};
 
@@ -27,9 +27,13 @@ impl ClipManager {
         event: &Event,
         buffer: &FrameBuffer,
     ) {
-        let event_ts = buffer.newest_instant();
-        let start = event_ts - self.before;
-        let end   = event_ts + self.after;
+        let Some(event_ts) = buffer.newest_instant() else {
+            println!("[CLIP] Skipped clip job (no frames available)");
+            return;
+        };
+
+        let start = event_ts.checked_sub(self.before).unwrap_or(event_ts);
+        let end = event_ts.checked_add(self.after).unwrap_or(event_ts);
         let frames = buffer.slice(start, end);
         let job = ClipJob {
             event_type: event.event_type,
