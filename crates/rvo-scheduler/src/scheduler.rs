@@ -1,6 +1,10 @@
 use std::time::{Duration, Instant};
 
-use rvo_detector::detector::{DetectorContext, DetectorNode};
+use rvo_detector::detector::{
+    DetectorContext,
+    DetectorHealth,
+    DetectorNode,
+};
 use rvo_signals::store::SignalStore;
 use rvo_events::{EventEngine, EventDefinition, EventType};
 use rvo_metrics::METRICS;
@@ -11,6 +15,7 @@ use rvo_clips::ClipManager;
 
 struct DetectorRuntime {
     last_run: Instant,
+    disabled: bool,
 }
 
 pub struct Scheduler {
@@ -44,6 +49,7 @@ impl Scheduler {
             .iter()
             .map(|_| DetectorRuntime {
                 last_run: now,
+                disabled: false,
             })
             .collect();
 
@@ -72,6 +78,10 @@ impl Scheduler {
         let latest_frame = self.frame_buffer.newest_frame();
 
         for (i, detector) in self.detectors.iter_mut().enumerate() {
+            if self.runtime[i].disabled {
+                METRICS.detector_skips.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
 
             let min_interval =
                 Duration::from_secs_f64(1.0 / detector.max_fps());
@@ -100,11 +110,23 @@ impl Scheduler {
                 now_ns,
                 frame: latest_frame.as_ref(),
             };
+            let exec_start = Instant::now();
             let result = detector.execute(&ctx);
+            let elapsed_ns = exec_start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
 
             METRICS.detector_execs.fetch_add(1, Ordering::Relaxed);
+            METRICS.detector_exec_ns_total.fetch_add(
+                elapsed_ns,
+                Ordering::Relaxed,
+            );
 
             self.runtime[i].last_run = now;
+
+            if result.health == DetectorHealth::Failed {
+                self.runtime[i].disabled = true;
+                METRICS.detector_failures.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
 
             for sig in result.signals {
                 self.signal_store.upsert(sig);
@@ -129,6 +151,7 @@ impl Scheduler {
             .iter()
             .map(|_| DetectorRuntime {
                 last_run: std::time::Instant::now(),
+                disabled: false,
             })
             .collect();
 

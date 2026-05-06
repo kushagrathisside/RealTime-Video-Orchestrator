@@ -6,6 +6,7 @@ pub struct DetectorContext<'a> {
     pub frame: Option<&'a Frame>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DetectorHealth {
     Ok,
     Failed,

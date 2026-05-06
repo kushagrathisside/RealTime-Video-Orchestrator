@@ -68,8 +68,8 @@ real video inference.
 15. Partially fixed: expand the event engine beyond one hardcoded dummy condition.
     Support multiple event definitions and predicates over signal types.
 
-16. Use detector health and latency in scheduler policy.
-    `DetectorHealth` exists, but it does not currently affect behavior.
+16. Partially fixed: use detector health and latency in scheduler policy.
+    `FAILED` health disables a detector, and aggregate execution time is tracked.
 
 17. Implement real evidence output or event-only mode.
     The encoder currently prints and sleeps; a usable MVP needs either actual
@@ -508,19 +508,32 @@ Remaining:
 
 ### Detector Health Is Ignored
 
-`DetectorResult` includes `health`, but the scheduler ignores it.
+Status: fixed in source for `FAILED` health.
 
-Required fix:
+Original issue: `DetectorResult` included `health`, but the scheduler ignored
+it.
+
+Applied fix:
 
 - record health metrics
-- degrade or disable failed detectors
+- disable failed detectors
+
+Remaining:
+
 - decide policy for `DEGRADED` and `FAILED`
 
 ### No Execution Latency Measurement
 
-The scheduler counts executions and skips, but does not measure execution time.
+Status: partially fixed in source.
 
-Required fix:
+Original issue: the scheduler counted executions and skips, but did not measure
+execution time.
+
+Applied fix:
+
+- record aggregate detector execution nanoseconds
+
+Remaining:
 
 - record per-detector execution latency
 - use latency for load shedding and observability
