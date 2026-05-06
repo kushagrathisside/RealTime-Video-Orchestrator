@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "crates/rvo-core",
+    "crates/rvo-signals",
+    "crates/rvo-detector",
+    "crates/rvo-scheduler",
+    "crates/rvo-bin"
+]
+resolver = "2"

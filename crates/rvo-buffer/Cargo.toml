@@ -1,0 +1,7 @@
+[package]
+name = "rvo-buffer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+opencv = { version = "0.88", default-features = false }

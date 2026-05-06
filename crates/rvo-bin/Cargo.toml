@@ -1,0 +1,22 @@
+[package]
+name = "rvo-bin"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# External dependencies
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.10"
+signal-hook = "0.3"
+crossbeam-channel = "0.5"
+
+# Workspace dependencies
+rvo-scheduler = { path = "../rvo-scheduler" }
+rvo-config = { path = "../rvo-config" }
+rvo-detector = { path = "../rvo-detector" }
+rvo-camera = { path = "../rvo-camera" }
+rvo-clips = { path = "../rvo-clips" }
+rvo-metrics = { path = "../rvo-metrics" }
+rvo-events = { path = "../rvo-events" }
+rvo-signals = { path = "../rvo-signals" }

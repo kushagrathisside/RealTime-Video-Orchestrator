@@ -1,0 +1,9 @@
+[package]
+name = "rvo-clips"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crossbeam-channel = "0.5"
+rvo-buffer = { path = "../rvo-buffer" }
+rvo-events = { path = "../rvo-events" }

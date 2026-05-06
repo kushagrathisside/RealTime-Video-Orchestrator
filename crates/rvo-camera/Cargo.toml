@@ -1,0 +1,8 @@
+[package]
+name = "rvo-camera"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+opencv = { version = "0.88", default-features = false }
+crossbeam-channel = "0.5"

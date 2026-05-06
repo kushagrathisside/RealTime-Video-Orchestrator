@@ -1,0 +1,19 @@
+# Rust build output
+/target/
+
+# Python/local environments
+/venv/
+/.venv/
+
+# Logs and local diagnostics
+*.log
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local environment files
+.env
+.env.*
