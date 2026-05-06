@@ -50,7 +50,7 @@ real video inference.
 10. Fixed: make config reload non-fatal.
     Invalid reloads should preserve the old runtime instead of panicking.
 
-11. Harden camera failure behavior.
+11. Partially fixed: harden camera failure behavior.
     Camera open/read failures need health reporting, retry/backoff, and no
     tight failure loop.
 
@@ -397,17 +397,24 @@ Remaining:
 
 ### Camera Failure Path Can Spin Or Die Quietly
 
-Camera startup uses `expect` inside the spawned thread. If the camera fails to
-open, the camera thread panics while the rest of the process can keep running.
+Status: partially fixed in source.
+
+Original issue: camera startup used `expect` inside the spawned thread. If the
+camera failed to open, the camera thread panicked while the rest of the process
+could keep running.
 
 Frame read failures use `continue`, which can become a tight loop if the camera
 keeps failing.
 
-Required fix:
+Applied fix:
+
+- avoid panicking on camera open failure
+- avoid tight looping on repeated read failure
+
+Remaining:
 
 - surface camera health
-- add retry/backoff
-- avoid tight looping on repeated read failure
+- add retry/backoff for reopening failed cameras
 - expose capture-alive metrics
 
 ## P2: Missing MVP Features For Real DL Workloads
