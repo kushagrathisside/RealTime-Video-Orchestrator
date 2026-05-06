@@ -1,8 +1,6 @@
 use rvo_signals::store::SignalStore;
 use crate::event::Event;
 use crate::EventDefinition;
-use rvo_signals::store::Signal;
-use crate::event::EventType;
 
 
 
@@ -26,6 +24,25 @@ impl EventEngine {
         }
     }
 
+    fn emit_event(&mut self, now_ns: u64, start_ns: u64) -> Event {
+        let elapsed_ns = now_ns.saturating_sub(start_ns);
+        let confidence = if self.def.duration_ns == 0 {
+            1.0
+        } else {
+            (elapsed_ns as f64 / self.def.duration_ns as f64).min(1.0)
+        };
+
+        self.state = State::Cooldown {
+            until_ns: now_ns.saturating_add(self.def.cooldown_ns),
+        };
+
+        Event {
+            event_type: self.def.event_type,
+            ts_ns: now_ns,
+            confidence,
+        }
+    }
+
     pub fn update(
         &mut self,
         now_ns: u64,
@@ -40,31 +57,21 @@ impl EventEngine {
         match self.state {
             State::Idle => {
                 if condition {
-                    self.state = State::Potential {
-                        start_ns: now_ns,
-                    };
+                    if self.def.duration_ns == 0 {
+                        return Some(self.emit_event(now_ns, now_ns));
+                    } else {
+                        self.state = State::Potential {
+                            start_ns: now_ns,
+                        };
+                    }
                 }
             }
 
             State::Potential { start_ns } => {
                 if !condition {
                     self.state = State::Idle;
-                } else if now_ns - start_ns >= self.def.duration_ns {
-                    let confidence =
-                        (now_ns - start_ns) as f64
-                            / self.def.duration_ns as f64;
-
-                    let event = Event {
-                        event_type: self.def.event_type,
-                        ts_ns: now_ns,
-                        confidence: confidence.min(1.0),
-                    };
-
-                    self.state = State::Cooldown {
-                        until_ns: now_ns + self.def.cooldown_ns,
-                    };
-
-                    return Some(event);
+                } else if now_ns.saturating_sub(start_ns) >= self.def.duration_ns {
+                    return Some(self.emit_event(now_ns, start_ns));
                 }
             }
 
@@ -82,6 +89,8 @@ impl EventEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::EventType;
+    use rvo_signals::store::Signal;
     use rvo_signals::store::SignalStore;
 
     #[test]
@@ -98,17 +107,16 @@ mod tests {
 
         // Simulate signal present
         store.upsert(Signal {
-            //name: "dummy".to_string(),
             value: 1,
-            ts_ns: 1,
-            ttl_ns:1,
+            ts_ns: 0,
+            ttl_ns: 2_000_000_000,
         });
 
 
-        // Before duration → no event
+        // Before duration: no event
         assert!(engine.update(500_000_000, &store).is_none());
 
-        // After duration → event
+        // After duration: event
         let evt = engine.update(1_500_000_000, &store);
         assert!(evt.is_some());
     }
@@ -125,16 +133,15 @@ mod tests {
         let mut engine = EventEngine::new(def);
         let mut store = SignalStore::new();
         store.upsert(Signal {
-            //name: "dummy".to_string(),
             value: 1,
-            ts_ns: 1,
-            ttl_ns:1,
+            ts_ns: 0,
+            ttl_ns: 2_000_000_000,
         });
 
         let first = engine.update(0, &store);
         assert!(first.is_some());
 
-        // Within cooldown → no event
+        // Within cooldown: no event
         let second = engine.update(500_000_000, &store);
         assert!(second.is_none());
     }

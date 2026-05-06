@@ -25,15 +25,15 @@ real video inference.
 3. Fixed: make reload cross-platform or guard `SIGHUP`.
    The reload thread is now Unix-only, while non-Unix builds skip SIGHUP reload.
 
-4. Fix scheduler monotonic time.
+4. Fixed: scheduler monotonic time.
    `now.elapsed()` is nearly zero every tick, so event duration and cooldown
    behavior cannot be trusted.
 
-5. Normalize signal TTL semantics.
+5. Fixed: normalize signal TTL semantics.
    `SignalStore` treats TTL as a duration, while `DummyDetector` writes it like
    an absolute expiry timestamp.
 
-6. Fix event tests and zero-duration event behavior.
+6. Fixed: event tests and zero-duration event behavior.
    Tests should use fresh signals, and the event engine should not divide by
    zero when duration is zero.
 
@@ -41,7 +41,7 @@ real video inference.
    Event-triggered clip extraction should drop or defer evidence instead of
    panicking.
 
-8. Increment emitted-event metrics.
+8. Fixed: increment emitted-event metrics.
    The metric exists but is not updated when an event fires.
 
 9. Return frame slices in chronological order.
@@ -147,7 +147,7 @@ pub use dummy::DummyDetector;
 
 But the binary and scheduler test import it from `rvo_detector::detector`.
 
-Current imports:
+Original imports:
 
 ```rust
 use rvo_detector::detector::{DetectorNode, DummyDetector};
@@ -218,23 +218,27 @@ These issues affect whether RVO behaves correctly even after it compiles.
 
 ### Scheduler Time Does Not Advance Correctly
 
-Current code:
+Status: fixed in source.
+
+Original code:
 
 ```rust
 let now = Instant::now();
 let now_ns = now.elapsed().as_nanos() as u64;
 ```
 
-Because `now` was just created, `now.elapsed()` is nearly zero every tick. The
+Because `now` was just created, `now.elapsed()` was nearly zero every tick. The
 event engine needs a monotonic timestamp that advances across scheduler ticks.
 
-Required fix:
+Applied fix:
 
 - store a stable `started_at: Instant` in `Scheduler`
 - compute `now_ns = now.duration_since(started_at).as_nanos() as u64`
 - use the same monotonic basis for detector signals and event evaluation
 
 ### Signal TTL Semantics Are Inconsistent
+
+Status: fixed in source.
 
 `SignalStore::get` treats `ttl_ns` as a duration:
 
@@ -252,7 +256,7 @@ ttl_ns: ctx.now_ns + 1_000_000_000
 
 That looks like an absolute expiry timestamp, not a duration.
 
-Required fix:
+Applied fix:
 
 - choose one meaning
 - recommended: `ttl_ns` should be a duration
@@ -261,7 +265,9 @@ Required fix:
 
 ### Event Tests Do Not Match Signal Freshness
 
-The event engine tests insert:
+Status: fixed in source.
+
+The event engine tests previously inserted:
 
 ```rust
 Signal {
@@ -274,12 +280,14 @@ Signal {
 Then they evaluate at much later timestamps. With duration-style TTLs, this
 signal is stale almost immediately, so event assertions become invalid.
 
-Required fix:
+Applied fix:
 
 - use a TTL large enough for the simulated event duration
 - or update the signal at each simulated tick
 
 ### Zero Duration Event Can Produce Bad Confidence
+
+Status: fixed in source.
 
 The test config uses `duration_ns: 0`.
 
@@ -292,7 +300,7 @@ The event engine computes:
 Production config validation rejects zero durations, but tests can still create
 zero-duration definitions directly.
 
-Required fix:
+Applied fix:
 
 - guard zero duration in `EventEngine`
 - or make `EventDefinition` construction validate duration and cooldown
@@ -340,10 +348,12 @@ The scheduler must not wait for post-roll.
 
 ### Events Metric Is Not Incremented
 
-`rvo_events_emitted_total` exists, but the scheduler does not increment it when
-an event is emitted.
+Status: fixed in source.
 
-Required fix:
+`rvo_events_emitted_total` exists, and the scheduler now increments it when an
+event is emitted.
+
+Applied fix:
 
 - increment `METRICS.events_emitted` inside the `if let Some(event)` block
 

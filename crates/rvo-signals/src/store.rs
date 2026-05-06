@@ -61,7 +61,7 @@ impl SignalStore {
             return None;
         }
 
-        if sig.ts_ns + sig.ttl_ns < now_ns {
+        if sig.ts_ns.saturating_add(sig.ttl_ns) < now_ns {
             None
         } else {
             Some(sig)

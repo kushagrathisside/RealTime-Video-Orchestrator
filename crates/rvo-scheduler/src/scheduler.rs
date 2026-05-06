@@ -16,6 +16,7 @@ struct DetectorRuntime {
 pub struct Scheduler {
     detectors: Vec<Box<dyn DetectorNode>>,
     runtime: Vec<DetectorRuntime>,
+    started_at: Instant,
     signal_store: SignalStore,
     event_engine: EventEngine,
     frame_buffer: FrameBuffer,
@@ -38,16 +39,18 @@ impl Scheduler {
         frame_rx: Receiver<Frame>,
         clip_manager: ClipManager,
     ) -> Self {
+        let now = Instant::now();
         let runtime = detectors
             .iter()
             .map(|_| DetectorRuntime {
-                last_run: Instant::now(),
+                last_run: now,
             })
             .collect();
 
         Self {
             detectors,
             runtime,
+            started_at: now,
             signal_store: SignalStore::new(),
             event_engine,
             frame_buffer: FrameBuffer::new(300), // ~10s @ 30fps
@@ -65,7 +68,7 @@ impl Scheduler {
         METRICS.scheduler_ticks.fetch_add(1, Ordering::Relaxed);
 
         let now = Instant::now();
-        let now_ns = now.elapsed().as_nanos() as u64;
+        let now_ns = now.duration_since(self.started_at).as_nanos() as u64;
 
         for (i, detector) in self.detectors.iter_mut().enumerate() {
 
@@ -92,6 +95,7 @@ impl Scheduler {
         if let Some(event) =
             self.event_engine.update(now_ns, &self.signal_store)
         {
+            METRICS.events_emitted.fetch_add(1, Ordering::Relaxed);
             self.clip_manager.on_event(
                 &event,
                 &self.frame_buffer,

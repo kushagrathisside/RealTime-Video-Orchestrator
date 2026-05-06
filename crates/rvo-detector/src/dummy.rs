@@ -21,7 +21,7 @@ impl DetectorNode for DummyDetector {
         let signal = Signal {
             value: 1,
             ts_ns: ctx.now_ns,
-            ttl_ns: ctx.now_ns + 1_000_000_000, // 1 second TTL
+            ttl_ns: 1_000_000_000, // 1 second TTL
         };
 
         DetectorResult {
