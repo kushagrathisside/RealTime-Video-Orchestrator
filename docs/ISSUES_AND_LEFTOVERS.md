@@ -47,7 +47,7 @@ real video inference.
 9. Fixed: return frame slices in chronological order.
    Circular-buffer storage order is not the same as timestamp order.
 
-10. Make config reload non-fatal.
+10. Fixed: make config reload non-fatal.
     Invalid reloads should preserve the old runtime instead of panicking.
 
 11. Harden camera failure behavior.
@@ -377,17 +377,23 @@ Applied fix:
 
 ### Config Reload Can Panic Instead Of Preserving Old Config
 
-`load_config` uses `expect`, and detector/event factories use `panic!` on
-unknown values.
+Status: fixed in source.
+
+Original issue: `load_config` used `expect`, and detector/event factories used
+`panic!` on unknown values.
 
 On reload, invalid config should not destabilize the running system.
 
-Required fix:
+Applied fix:
 
 - make config loading return `Result`
 - validate fully before swapping runtime
 - keep old runtime active if reload fails
-- emit a reload failure metric or log
+- emit a reload failure log
+
+Remaining:
+
+- emit a reload failure metric
 
 ### Camera Failure Path Can Spin Or Die Quietly
 

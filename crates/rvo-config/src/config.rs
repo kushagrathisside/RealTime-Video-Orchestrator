@@ -72,6 +72,16 @@ impl RvoConfig {
         }
 
         for e in &self.events {
+            match e.event_type.as_str() {
+                "DummyEvent" => {}
+                other => {
+                    return Err(format!(
+                        "Unknown event type: {}",
+                        other
+                    ));
+                }
+            }
+
             if e.duration_ms == 0 {
                 return Err(format!(
                     "Event {} has zero duration",

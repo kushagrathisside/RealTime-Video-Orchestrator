@@ -11,14 +11,14 @@ use rvo_detector::detector::DetectorNode;
 use rvo_detector::load::LoadDetector;
 use rvo_detector::jitter::JitterDetector;
 
-use rvo_config::{load_config, RvoConfig};
+use rvo_config::{try_load_config, RvoConfig};
 use rvo_events::{EventEngine, EventDefinition, EventType};
 
 use rvo_camera::{start_camera, CameraConfig};
 use rvo_clips::{ClipManager, start_encoder_worker};
 
 /// ---------------- detector factory ----------------
-fn build_detectors(cfg: &RvoConfig) -> Vec<Box<dyn DetectorNode>> {
+fn build_detectors(cfg: &RvoConfig) -> Result<Vec<Box<dyn DetectorNode>>, String> {
     let mut detectors: Vec<Box<dyn DetectorNode>> = Vec::new();
 
     for d in &cfg.detectors {
@@ -36,28 +36,52 @@ fn build_detectors(cfg: &RvoConfig) -> Vec<Box<dyn DetectorNode>> {
 
             "jitter" => detectors.push(Box::new(JitterDetector)),
 
-            other => panic!("Unknown detector kind: {}", other),
+            other => return Err(format!("Unknown detector kind: {}", other)),
         }
     }
 
-    detectors
+    Ok(detectors)
 }
 
 /// ---------------- event engine factory ----------------
-fn build_event_engine(cfg: &RvoConfig) -> EventEngine {
+fn build_event_engine(cfg: &RvoConfig) -> Result<EventEngine, String> {
     let e = &cfg.events[0]; // single-event for now
 
     let event_type = match e.event_type.as_str() {
         "DummyEvent" => EventType::DummyEvent,
-        other => panic!("Unknown event type: {}", other),
+        other => return Err(format!("Unknown event type: {}", other)),
     };
 
-    EventEngine::new(EventDefinition {
+    Ok(EventEngine::new(EventDefinition {
         event_type,
         signal_threshold: e.signal_threshold,
         duration_ns: e.duration_ms * 1_000_000,
         cooldown_ns: e.cooldown_ms * 1_000_000,
-    })
+    }))
+}
+
+fn build_runtime_config(
+    path: &str,
+) -> Result<(Vec<Box<dyn DetectorNode>>, EventEngine), String> {
+    let cfg = try_load_config(path)?;
+    let detectors = build_detectors(&cfg)?;
+    let event_engine = build_event_engine(&cfg)?;
+
+    Ok((detectors, event_engine))
+}
+
+#[cfg(unix)]
+fn reload_scheduler(
+    scheduler: &Arc<Mutex<Scheduler>>,
+    path: &str,
+) -> Result<(), String> {
+    let (detectors, event_engine) = build_runtime_config(path)?;
+    let mut sched = scheduler
+        .lock()
+        .map_err(|_| "Scheduler lock poisoned".to_string())?;
+
+    sched.swap_runtime(detectors, event_engine);
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -71,14 +95,10 @@ fn spawn_reload_thread(scheduler: Arc<Mutex<Scheduler>>) {
         for _ in signals.forever() {
             println!("[RVO] SIGHUP received, reloading config");
 
-            let cfg = load_config("config/rvo.yaml");
-            let detectors = build_detectors(&cfg);
-            let event_engine = build_event_engine(&cfg);
-
-            let mut sched = scheduler.lock().unwrap();
-            sched.swap_runtime(detectors, event_engine);
-
-            println!("[RVO] Reload complete");
+            match reload_scheduler(&scheduler, "config/rvo.yaml") {
+                Ok(()) => println!("[RVO] Reload complete"),
+                Err(err) => eprintln!("[RVO] Reload failed: {}", err),
+            }
         }
     });
 }
@@ -93,9 +113,8 @@ fn main() {
     start_metrics_server(9090);
 
     // ---------------- initial config ----------------
-    let cfg = load_config("config/rvo.yaml");
-    let detectors = build_detectors(&cfg);
-    let event_engine = build_event_engine(&cfg);
+    let (detectors, event_engine) =
+        build_runtime_config("config/rvo.yaml").expect("initial config");
 
     // ---------------- camera ----------------
     let (frame_tx, frame_rx) = bounded(5);
