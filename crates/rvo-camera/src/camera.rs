@@ -37,6 +37,23 @@ impl CameraConfig {
     }
 }
 
+/// Probe local camera device indices `0..max` and return those that open.
+///
+/// Best-effort helper for the CLI's `--list-cameras`: it shows the user which
+/// device indices are usable as a `--camera-device` argument. Opening a device
+/// can be slow, so callers should keep `max` small (e.g. 10).
+pub fn list_cameras(max: i32) -> Vec<i32> {
+    let mut found = Vec::new();
+    for idx in 0..max {
+        if let Ok(cam) = videoio::VideoCapture::new(idx, videoio::CAP_ANY) {
+            if cam.is_opened().unwrap_or(false) {
+                found.push(idx);
+            }
+        }
+    }
+    found
+}
+
 pub fn start_camera(cfg: CameraConfig, tx: Sender<Frame>) {
     thread::spawn(move || {
         let mut cam = match &cfg.source {

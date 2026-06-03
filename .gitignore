@@ -11,11 +11,16 @@ __pycache__/
 # Logs and local diagnostics
 *.log
 
+# Generated gRPC stubs (produced by demo/gen_protos.sh)
+demo/services/*_pb2.py
+demo/services/*_pb2_grpc.py
+
 # Editor and OS noise
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
+.claude/
 *.swp
 *~
 

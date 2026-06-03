@@ -1,0 +1,5 @@
+# Pin the toolchain so CI is reproducible and a floating-stable bump can't break
+# the build via newly-promoted clippy lints. Bump deliberately, not by surprise.
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]

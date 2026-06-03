@@ -20,6 +20,30 @@ pub enum SignalType {
 impl SignalType {
     const COUNT: usize = 4;
 
+    /// All signal variants, for iteration (e.g. dashboards/snapshots).
+    pub const ALL: [SignalType; Self::COUNT] = [
+        SignalType::Dummy,
+        SignalType::MotionLevel,
+        SignalType::FacePresent,
+        SignalType::PersonDetected,
+    ];
+
+    /// Stable wire/display name. Matches the strings accepted by config and the
+    /// gRPC contract.
+    pub fn name(self) -> &'static str {
+        match self {
+            SignalType::Dummy => "Dummy",
+            SignalType::MotionLevel => "MotionLevel",
+            SignalType::FacePresent => "FacePresent",
+            SignalType::PersonDetected => "PersonDetected",
+        }
+    }
+
+    /// Parse a signal type from its [`name`](Self::name). Inverse of `name()`.
+    pub fn from_name(name: &str) -> Option<SignalType> {
+        SignalType::ALL.into_iter().find(|s| s.name() == name)
+    }
+
     fn index(self) -> usize {
         match self {
             SignalType::Dummy => 0,

@@ -30,6 +30,22 @@ pub struct DetectorConfig {
     pub enabled: bool,
 
     pub busy_ns: Option<u64>,
+
+    /// gRPC target for `kind: remote_grpc`, e.g. "http://localhost:50051".
+    pub endpoint: Option<String>,
+
+    /// Which signal a `remote_grpc` service produces (must be a known
+    /// `SignalType` name).
+    pub output_signal: Option<String>,
+
+    /// Per-RPC timeout for `remote_grpc`. Defaults to 200ms.
+    pub timeout_ms: Option<u64>,
+
+    /// Dispatch-rate cap for `remote_grpc`. Defaults to 15.0.
+    pub max_fps: Option<f64>,
+
+    /// Freshness window for signals emitted by `remote_grpc`. Defaults to 1000ms.
+    pub ttl_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,12 +107,30 @@ impl RvoConfig {
 
         for d in &self.detectors {
             match d.kind.as_str() {
-                "dummy" | "load" | "jitter" => {}
+                "dummy" | "load" | "jitter" | "remote_grpc" => {}
                 other => return Err(format!("Unknown detector kind: {}", other)),
             }
 
             if d.kind == "load" && d.busy_ns.is_none() {
                 return Err("Detector 'load' requires busy_ns".into());
+            }
+
+            if d.kind == "remote_grpc" {
+                if d.endpoint.is_none() {
+                    return Err("Detector 'remote_grpc' requires endpoint".into());
+                }
+                match &d.output_signal {
+                    None => {
+                        return Err("Detector 'remote_grpc' requires output_signal".into());
+                    }
+                    Some(sig) if !KNOWN_SIGNAL_TYPES.contains(&sig.as_str()) => {
+                        return Err(format!(
+                            "Detector 'remote_grpc' has unknown output_signal '{}'. Known: {:?}",
+                            sig, KNOWN_SIGNAL_TYPES
+                        ));
+                    }
+                    Some(_) => {}
+                }
             }
         }
 

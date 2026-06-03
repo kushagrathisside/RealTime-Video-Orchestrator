@@ -8,10 +8,21 @@ members = [
     "crates/rvo-core",
     "crates/rvo-detector",
     "crates/rvo-events",
+    "crates/rvo-bench",
     "crates/rvo-metrics",
+    "crates/rvo-remote",
     "crates/rvo-scenarios",
     "crates/rvo-scheduler",
     "crates/rvo-signals",
     "crates/rvo-testkit"
 ]
 resolver = "2"
+
+# Release builds and benchmarks must be optimized + LTO'd; debug-build latency
+# numbers are meaningless. Criterion uses the `bench` profile.
+[profile.release]
+lto = true
+codegen-units = 1
+
+[profile.bench]
+inherits = "release"

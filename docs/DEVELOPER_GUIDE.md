@@ -99,6 +99,9 @@ Opens a `VideoCapture` from a device index or URI. Produces `Frame` values and `
 ### `rvo-detector`
 Defines the `DetectorNode` trait, `DetectorMeta`, `DetectorContext`, and `DetectorResult`. Also contains the synthetic detectors used in production config (`DummyDetector`, `LoadDetector`, `JitterDetector`). This crate is the abstraction boundary between the scheduler and any model implementation.
 
+### `rvo-remote`
+Bridges RVO to external model services. `RemoteGrpcDetector` implements `DetectorNode` but sources its signals from a gRPC service (the `rvo.detect.v1.Detector` contract in `proto/detector.proto`) instead of computing them in-process. The gRPC client runs on a dedicated worker thread with its own Tokio runtime and a persistent HTTP/2 channel; `execute()` itself never blocks (see §5.9). This is how a camera frame reaches an external YOLO / image-pipeline service and comes back as a `PersonDetected` or `FacePresent` signal. Codegen uses `tonic-build` with a vendored `protoc`, so no system protobuf compiler is required.
+
 ### `rvo-signals`
 Defines `SignalType`, `Signal`, and `SignalStore`. The store is a typed blackboard: one slot per `SignalType`, O(1) read and write by type index, TTL freshness enforced at read time. Signals are the shared language between detectors and the event engine.
 
@@ -251,6 +254,28 @@ SIGHUP (Unix only) reloads config, rebuilds detectors and the event engine, and 
 
 A consequence: the event state machines are rebuilt from scratch on reload. Any in-progress `Potential` state is lost. Events that were building toward confirmation are reset to `Idle`. This is acceptable for config changes but should be documented as a known behavior.
 
+### 5.9 Remote detectors over gRPC (decoupled inference)
+
+A detector does not have to compute in-process. `RemoteGrpcDetector` (in `rvo-remote`) wraps an external model service: each camera frame is JPEG-encoded and sent over gRPC, and the reply is mapped back into a `Signal`. This is how RVO fans frames out to a YOLO service, a face/emotion service, or any process speaking the `rvo.detect.v1.Detector` contract — without coupling the orchestrator to a model runtime or language.
+
+The hard constraint is the system invariant from §2: *the live path must never wait for slow work.* A network round-trip plus model inference is the slowest thing in the system, and the scheduler times every `execute()` call and backs off detectors that overrun (§5.6). So a naive "call gRPC inside `execute()` and block" would either stall the 1 ms tick or trip its own backoff every frame. The design decouples inference from the tick:
+
+```
+scheduler tick (hot)          worker thread (own Tokio runtime + persistent channel)
+────────────────────          ─────────────────────────────────────────────────────
+execute(ctx):                 loop:
+  publish newest frame   →      take newest frame, JPEG-encode
+  read cached result     ←      Detect() over the persistent HTTP/2 channel
+  return signals (w/ ttl)       store (value, produced_at)
+```
+
+- **`execute()` is non-blocking.** It writes the newest frame into a single-slot mailbox (overwrite-newest, the same discipline as the camera→buffer handoff) and returns the most recently cached result. The network never touches the hot path.
+- **Staleness is handled by the existing TTL mechanism, not a new one.** The cached result is stamped `ts_ns = now_ns − result_age`, so if the worker falls behind, the signal expires in the `SignalStore` (§5.4) exactly as an in-process signal would. Events never fire on a stale remote detection.
+- **The channel is persistent and dialed lazily.** `connect_lazy` means construction never blocks; tonic reconnects transparently, so a service that is down at startup or bounces mid-run does not tear down the detector.
+- **Failure is bounded, then terminal.** Transient RPC errors/timeouts are tolerated; only after a threshold of consecutive failures does the detector report `DetectorHealth::Failed`, at which point the scheduler disables it (§5.6 health gate) and the rest of the pipeline keeps running. This is the "kill a model service, the pipeline survives" property.
+
+Tradeoffs: signals lag real-world state by roughly one round-trip, and the worker introduces one thread + one Tokio runtime per remote detector. Both are acceptable for the value — arbitrary models in any language, hot-swappable behind a stable proto, with the orchestrator's latency guarantees intact. The mapping is deliberately one detector ↔ one `SignalType`, so adding a second model is just a second `remote_grpc` entry (see §7).
+
 ---
 
 ## 6. Known Caveats and Open Problems
@@ -304,7 +329,100 @@ Option 2 is acceptable in test-only code but is a memory leak that grows with th
 
 ---
 
-## 7. Practical Dev Workflow
+## 7. Running RVO: the CLI and the TUI
+
+RVO ships two front-ends, both in `rvo-bin`: a headless **CLI** (`rvo`, the default binary) for servers and scripted demos, and an interactive **TUI** (`rvo-tui`) for driving and watching the pipeline live. Both run the same runtime — they only differ in how you start it and what you see.
+
+### 7.1 The CLI app (`rvo`)
+
+#### How to use it
+
+```sh
+# Default: read config/rvo.yaml (or $RVO_CONFIG), run until killed.
+cargo run -p rvo-bin
+
+# Discover camera options before starting.
+cargo run -p rvo-bin -- --list-cameras
+#   device 0  (use: --camera-device 0)
+
+# Pick a camera and attach remote model services from the command line.
+cargo run -p rvo-bin -- \
+  --camera-device 0 \
+  --detector http://localhost:50051=PersonDetected \
+  --detector http://localhost:50052=FacePresent \
+  --clips-dir clips/demo
+```
+
+| Flag | Purpose |
+|---|---|
+| `--config <PATH>` | Config file path (overrides `$RVO_CONFIG`). |
+| `--camera-device <N>` | Use local device index `N`. |
+| `--camera-uri <URI>` | Use an RTSP/file/MJPEG URI (mutually exclusive with `--camera-device`). |
+| `--detector ENDPOINT=SIGNAL` | Add a `remote_grpc` detector. Repeatable. |
+| `--clips-dir <DIR>` | Output directory for evidence clips. |
+| `--metrics-port <PORT>` | Prometheus/health server port (default 9090). |
+| `--list-cameras` | Probe device indices 0–9, print which open, exit. |
+
+#### How it works
+
+`main()` parses flags with `clap`, then: resolves the config path (`--config` → `$RVO_CONFIG` → `config/rvo.yaml`), loads and validates the YAML, and applies CLI overrides on top of the parsed `RvoConfig` — camera source, clips dir, and any `--detector` specs appended as `remote_grpc` `DetectorConfig` entries. The merged config then flows through the normal wiring (`build_detectors`, `build_event_engine`) into the scheduler's 1 ms tick loop.
+
+The division of labour is deliberate: **CLI flags augment the camera and add detectors; events always come from the config file.** This keeps the event rules (which need durations, cooldowns, thresholds) declarative while letting you point the binary at a different camera or model service without editing YAML. `--list-cameras` is backed by `rvo_camera::list_cameras`, which best-effort-opens each device index so you know what `--camera-device` values are valid. Note that SIGHUP reload re-reads the file and therefore drops CLI overrides — the file is the source of truth on reload.
+
+### 7.2 The TUI app (`rvo-tui`)
+
+#### How to use it
+
+```sh
+cargo run -p rvo-bin --bin rvo-tui
+# or against the gRPC demo config:
+RVO_CONFIG=config/rvo-remote.yaml cargo run -p rvo-bin --bin rvo-tui
+```
+
+Two phases:
+
+- **Menu** — pick a camera source. Probed local devices and the config default are listed; `↑/↓` (or `j/k`) to move, `Enter` to start, `q` to quit.
+- **Dashboard** — a live view while the pipeline runs: configured **services**, the **signal** blackboard (each `SignalType` shown present/absent with its current value), aggregate **metrics** (ticks, detector exec/skip/fail, average exec latency, events, drops), and the **recent events** stream. `q`/`Esc` quits.
+
+#### How it works
+
+The detectors and events still come entirely from config; the menu only chooses the camera. On start, the TUI builds the same runtime as the CLI and spawns the scheduler tick loop on a background thread, then the UI thread renders at ~7 fps using `ratatui`. It reads three live sources without disturbing the hot path:
+
+- **Metrics** — the global atomic counters in `rvo-metrics` (`METRICS`), read directly each frame.
+- **Signals** — `Scheduler::signal_snapshot()` briefly locks the scheduler to read each slot's non-expired value (the same TTL check the event engine uses).
+- **Events** — a tap thread drains the event channel into a 50-entry ring buffer the dashboard renders from, instead of the stdout/file sink the CLI uses.
+
+One detail worth noting: the TUI sets `RVO_REMOTE_SILENT` so a remote detector whose service is down cannot spam stderr over the alternate screen. The same failure still surfaces — as a rising `detector_fail` count and, after the failure threshold, the detector dropping out — just without corrupting the display.
+
+### 7.3 The end-to-end gRPC demo
+
+`demo/` wires the whole story together with two trivial stub model services (see `demo/README.md`):
+
+```sh
+pip install -r demo/requirements.txt
+bash demo/run_demo.sh        # codegen stubs, start both services, run RVO
+```
+
+Then cover/uncover the camera to drive the signals and observe `curl :9090/metrics`, `tail -f events.jsonl`, and `ls clips/demo/`. The stub services implement the same `rvo.detect.v1.Detector` proto as a real model would, so the demo exercises the actual remote-detector path (§5.9), not a mock.
+
+### 7.4 The web POC (`rvo-web`)
+
+For the most legible "what does RVO do" demo — and to make the pluggable model story tangible to a new user or an interviewer — `rvo-web` serves a browser dashboard:
+
+```sh
+cargo run -p rvo-bin --bin rvo-web        # then open http://127.0.0.1:8080
+# RVO_CONFIG=config/rvo-remote.yaml RVO_WEB_PORT=9000 cargo run -p rvo-bin --bin rvo-web
+```
+
+The page shows the camera source, the live signal blackboard (chips that light up green when present), aggregate metrics, registered model nodes, and recent events — polling `GET /api/state` every 700 ms. The key interaction is **adding a model node from the browser**: enter a gRPC `endpoint` + the `signal` it produces and submit, which `POST /api/nodes` turns into a `RemoteGrpcDetector` injected into the running scheduler via `Scheduler::add_detector` (§7 wiring). No restart — the node appears and its signal lights up as soon as the service responds. This is the camera→RVO→models fan-out made visible.
+
+How it works: `rvo-web` builds the same runtime as the CLI, runs the scheduler tick loop on a background thread, and reuses the `tiny_http` server (no new web framework). It reads live state from `Scheduler::signal_snapshot()`, the global `METRICS`, and an event-tap ring buffer; the frontend is a single embedded HTML/JS page with no external assets, so it works offline. Routes: `GET /` (page), `GET /api/state` (JSON), `POST /api/nodes` (add a node), `GET /metrics` (Prometheus, same as the CLI server).
+
+Because a model node requires camera frames to act on, a webcam-less host should point `camera.source_uri` at a video file in the config so frames flow and added nodes have something to score.
+
+---
+
+## 8. Practical Dev Workflow
 
 ### Build and run
 
@@ -337,9 +455,15 @@ cargo test -- --test-threads=1  # if metric assertions are sensitive to parallel
 3. Wire it into `rvo-bin` or config.
 4. Write a scenario test in `rvo-scenarios` if it affects event behavior.
 
+### Add a remote model service
+
+1. Implement the `rvo.detect.v1.Detector` gRPC contract in any language (see `demo/services/model_service.py` for a reference). Return `SignalOut` entries whose `signal_type` matches a known `SignalType` name.
+2. Add a `remote_grpc` detector to config (`endpoint`, `output_signal`, optional `max_fps`/`timeout_ms`/`ttl_ms`) or pass `--detector ENDPOINT=SIGNAL` on the CLI.
+3. No Rust changes are needed for a new model — the proto is the boundary. To validate the integration deterministically, add a test against an in-process tonic mock server (see `crates/rvo-remote/tests/grpc_pipeline.rs`).
+
 ### Add a signal type
 
-1. Extend `SignalType` in `rvo-signals`.
+1. Extend `SignalType` in `rvo-signals` (add to `ALL` and `name()` too).
 2. Update condition builders or event definitions that reference the new type.
 3. Verify freshness and TTL semantics in a scenario test.
 
@@ -351,18 +475,25 @@ cargo test -- --test-threads=1  # if metric assertions are sensitive to parallel
 
 ---
 
-## 8. Repo Structure
+## 9. Repo Structure
 
 ```
 Cargo.toml                      workspace members
-config/rvo.yaml                 runtime config
+config/
+  rvo.yaml                      default runtime config
+  rvo-remote.yaml               demo config: two remote_grpc detectors
 crates/
   rvo-bin/                      entrypoint
+    src/main.rs                 rvo CLI (default binary)
+    src/bin/rvo-tui.rs          rvo-tui interactive dashboard
+    src/bin/rvo-web.rs          rvo-web browser dashboard + node-add API
+    examples/                   synthetic_demo, rtsp_demo
   rvo-config/                   YAML loading
   rvo-core/                     Frame, time primitives
-  rvo-camera/                   capture
+  rvo-camera/                   capture (+ list_cameras probe)
   rvo-buffer/                   circular frame buffer
   rvo-detector/                 trait and synthetic detectors
+  rvo-remote/                   gRPC remote detector (proto + tonic client)
   rvo-signals/                  typed signal store
   rvo-events/                   condition DSL, event engine, publishers
   rvo-scheduler/                orchestration loop
@@ -370,10 +501,15 @@ crates/
   rvo-metrics/                  Prometheus counters, HTTP
   rvo-testkit/                  test-only infrastructure
   rvo-scenarios/                integration tests
+demo/                           end-to-end gRPC demo
+  proto/detector.proto          shared service contract
+  services/model_service.py     trivial stub model service
+  run_demo.sh, gen_protos.sh    harness
 docs/
   ARCHITECTURE.md               design decisions and data flow
   CURRENT_IMPLEMENTATION.md     implementation status
   ROADMAP.md                    phased work plan
   ISSUES_AND_LEFTOVERS.md       open issues and triage
   DEVELOPER_GUIDE.md            this file
+  LOW_LATENCY_SYSTEMS.md        conceptual primer on the domain + terms
 ```

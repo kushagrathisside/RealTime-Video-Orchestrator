@@ -1,0 +1,4 @@
+grpcio>=1.60
+grpcio-tools>=1.60
+opencv-python-headless>=4.8
+numpy>=1.24

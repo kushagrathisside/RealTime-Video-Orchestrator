@@ -1,3 +1,3 @@
 pub mod camera;
 
-pub use camera::{start_camera, CameraConfig, CameraSource};
+pub use camera::{list_cameras, start_camera, CameraConfig, CameraSource};

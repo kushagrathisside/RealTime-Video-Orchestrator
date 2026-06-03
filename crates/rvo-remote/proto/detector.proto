@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package rvo.detect.v1;
+
+// A model service implements Detector: it receives a single encoded frame and
+// returns zero or more typed signals. This is the contract RVO uses to fan
+// frames out to external (e.g. Python) inference services.
+service Detector {
+  rpc Detect(DetectRequest) returns (DetectResponse);
+}
+
+message DetectRequest {
+  // JPEG-encoded frame bytes (encoded by the RVO-side worker via OpenCV).
+  bytes frame_jpeg = 1;
+  // Monotonic frame id from the camera, for logging/correlation.
+  uint64 frame_id = 2;
+  // Optional capture timestamp in nanoseconds (0 if unknown).
+  uint64 ts_ns = 3;
+}
+
+message DetectResponse {
+  repeated SignalOut signals = 1;
+}
+
+message SignalOut {
+  // Must match an RVO SignalType name: "Dummy" | "MotionLevel" |
+  // "FacePresent" | "PersonDetected".
+  string signal_type = 1;
+  // Signal payload (e.g. 1 = present, or a normalised score 0..255).
+  uint64 value = 2;
+  // Suggested freshness window in nanoseconds (advisory; RVO also applies its
+  // own TTL based on result age).
+  uint64 ttl_ns = 3;
+}

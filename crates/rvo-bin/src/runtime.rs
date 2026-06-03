@@ -5,7 +5,20 @@ use rvo_detector::jitter::JitterDetector;
 use rvo_detector::load::LoadDetector;
 use rvo_detector::DummyDetector;
 use rvo_events::{Condition, EventDefinition, EventEngine, EventType};
+use rvo_remote::RemoteGrpcDetector;
 use rvo_signals::store::SignalType;
+
+/// Parse a signal-type name into a [`SignalType`]. Shared by detector and event
+/// wiring so both reject unknown names identically.
+fn parse_signal_type(name: &str) -> Result<SignalType, String> {
+    match name {
+        "Dummy" => Ok(SignalType::Dummy),
+        "MotionLevel" => Ok(SignalType::MotionLevel),
+        "FacePresent" => Ok(SignalType::FacePresent),
+        "PersonDetected" => Ok(SignalType::PersonDetected),
+        other => Err(format!("Unknown signal_type: {}", other)),
+    }
+}
 
 pub fn build_detectors(cfg: &RvoConfig) -> Result<Vec<Box<dyn DetectorNode>>, String> {
     let mut detectors: Vec<Box<dyn DetectorNode>> = Vec::new();
@@ -22,6 +35,30 @@ pub fn build_detectors(cfg: &RvoConfig) -> Result<Vec<Box<dyn DetectorNode>>, St
                 detectors.push(Box::new(LoadDetector::new(busy)));
             }
             "jitter" => detectors.push(Box::new(JitterDetector)),
+            "remote_grpc" => {
+                let endpoint = detector
+                    .endpoint
+                    .clone()
+                    .ok_or("Detector 'remote_grpc' requires endpoint")?;
+                let signal_name = detector
+                    .output_signal
+                    .clone()
+                    .ok_or("Detector 'remote_grpc' requires output_signal")?;
+                let output_signal = parse_signal_type(&signal_name)?;
+                let max_fps = detector.max_fps.unwrap_or(15.0);
+                let timeout_ms = detector.timeout_ms.unwrap_or(200);
+                let ttl_ns = detector.ttl_ms.unwrap_or(1000) * 1_000_000;
+                let id = format!("remote:{}", signal_name);
+
+                detectors.push(Box::new(RemoteGrpcDetector::new(
+                    id,
+                    endpoint,
+                    output_signal,
+                    max_fps,
+                    timeout_ms,
+                    ttl_ns,
+                )));
+            }
             other => return Err(format!("Unknown detector kind: {}", other)),
         }
     }
@@ -38,13 +75,7 @@ pub fn build_event_engine(cfg: &RvoConfig) -> Result<EventEngine, String> {
             other => return Err(format!("Unknown event type: {}", other)),
         };
 
-        let signal_type = match event.signal_type.as_str() {
-            "Dummy" => SignalType::Dummy,
-            "MotionLevel" => SignalType::MotionLevel,
-            "FacePresent" => SignalType::FacePresent,
-            "PersonDetected" => SignalType::PersonDetected,
-            other => return Err(format!("Unknown signal_type: {}", other)),
-        };
+        let signal_type = parse_signal_type(&event.signal_type)?;
 
         defs.push(EventDefinition {
             event_type,

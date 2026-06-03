@@ -1,0 +1,24 @@
+[package]
+name = "rvo-remote"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tonic = "0.12"
+prost = "0.13"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "macros"] }
+opencv = { version = "0.88", default-features = false, features = ["imgcodecs"] }
+rvo-detector = { path = "../rvo-detector" }
+rvo-signals = { path = "../rvo-signals" }
+rvo-buffer = { path = "../rvo-buffer" }
+rvo-metrics = { path = "../rvo-metrics" }
+
+[build-dependencies]
+tonic-build = "0.12"
+# Provides a protoc binary so neither local dev nor CI needs a system protoc.
+protoc-bin-vendored = "3"
+
+[dev-dependencies]
+rvo-testkit = { path = "../rvo-testkit" }
+rvo-events = { path = "../rvo-events" }
+crossbeam-channel = "0.5"

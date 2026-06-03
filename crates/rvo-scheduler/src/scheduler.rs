@@ -4,10 +4,13 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Receiver;
 use rvo_buffer::{Frame, FrameBuffer};
 use rvo_clips::ClipManager;
-use rvo_detector::detector::{DetectorContext, DetectorCostHint, DetectorHealth, DetectorNode};
+use rvo_detector::detector::{
+    DetectorContext, DetectorCostHint, DetectorHealth, DetectorNode, DetectorResult,
+};
 use rvo_events::{EventEngine, EventPublisher};
 use rvo_metrics::METRICS;
-use rvo_signals::store::SignalStore;
+use rvo_signals::store::{SignalStore, SignalType};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::Ordering;
 
 // When a detector overruns its FPS budget by this factor, it is placed in
@@ -63,6 +66,34 @@ impl Scheduler {
         self.frame_buffer.lock().unwrap().slice(start, end)
     }
 
+    /// Snapshot the current (non-expired) value of every signal type.
+    ///
+    /// `None` means the slot is empty or its TTL has lapsed. Used by the TUI
+    /// and web dashboards to show live signal state.
+    pub fn signal_snapshot(&self) -> Vec<(SignalType, Option<u64>)> {
+        let now_ns = Instant::now().duration_since(self.started_at).as_nanos() as u64;
+        SignalType::ALL
+            .iter()
+            .map(|&s| (s, self.signal_store.get(s, now_ns).map(|sig| sig.value)))
+            .collect()
+    }
+
+    /// Add a detector to the running scheduler.
+    ///
+    /// Unlike `swap_runtime`, this preserves existing detectors and event
+    /// state — it just appends one more node. Callers hold the scheduler lock,
+    /// so this never races a `tick()` (both serialize on the same mutex). Used
+    /// by the web POC to plug in a model node live.
+    pub fn add_detector(&mut self, detector: Box<dyn DetectorNode>) {
+        self.runtime.push(DetectorRuntime::new(Instant::now()));
+        self.detectors.push(detector);
+    }
+
+    /// Ids of the currently registered detectors, in execution order.
+    pub fn detector_ids(&self) -> Vec<&'static str> {
+        self.detectors.iter().map(|d| d.id()).collect()
+    }
+
     pub fn new(
         detectors: Vec<Box<dyn DetectorNode>>,
         event_engine: EventEngine,
@@ -91,6 +122,13 @@ impl Scheduler {
     }
 
     pub fn tick(&mut self) {
+        let tick_start = Instant::now();
+        // Queue depth before draining = backlog accumulated since the last tick
+        // (saturation signal; rises before frames are dropped).
+        METRICS
+            .frame_queue_depth
+            .store(self.frame_rx.len() as u64, Ordering::Relaxed);
+
         // Drain new frames without holding the lock across the rest of tick.
         {
             let mut buf = self.frame_buffer.lock().unwrap();
@@ -104,6 +142,15 @@ impl Scheduler {
         let now = Instant::now();
         let now_ns = now.duration_since(self.started_at).as_nanos() as u64;
         let latest_frame = self.frame_buffer.lock().unwrap().newest_frame();
+        if let Some(ref f) = latest_frame {
+            // In-process path latency: how stale the newest frame is when the
+            // tick picks it up (camera → buffer → scheduler).
+            let staleness_ns = now
+                .saturating_duration_since(f.ts)
+                .as_nanos()
+                .min(u64::MAX as u128) as u64;
+            METRICS.frame_staleness_ns.record_ns(staleness_ns);
+        }
 
         for (i, detector) in self.detectors.iter_mut().enumerate() {
             // --- Gate 1: permanently disabled by Failed health ---
@@ -148,13 +195,23 @@ impl Scheduler {
                 frame: latest_frame.as_ref(),
             };
             let exec_start = Instant::now();
-            let result = detector.execute(&ctx);
+            // A panicking detector (a bad model adapter, an `unwrap`, an OpenCV
+            // edge case) must never poison the scheduler mutex and take down the
+            // whole pipeline. Catch the unwind and treat it as a failed health
+            // result, so the detector is disabled like any other failure.
+            let result = catch_unwind(AssertUnwindSafe(|| detector.execute(&ctx))).unwrap_or(
+                DetectorResult {
+                    signals: Vec::new(),
+                    health: DetectorHealth::Failed,
+                },
+            );
             let elapsed_ns = exec_start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
 
             METRICS.detector_execs.fetch_add(1, Ordering::Relaxed);
             METRICS
                 .detector_exec_ns_total
                 .fetch_add(elapsed_ns, Ordering::Relaxed);
+            METRICS.detector_exec_ns.record_ns(elapsed_ns);
 
             self.runtime[i].last_run = now;
 
@@ -183,6 +240,9 @@ impl Scheduler {
             self.event_publisher.publish(&event);
             self.clip_manager.on_event(&event);
         }
+
+        let tick_ns = tick_start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        METRICS.tick_ns.record_ns(tick_ns);
     }
 
     pub fn swap_runtime(
@@ -248,6 +308,72 @@ mod tests {
         for _ in 0..100 {
             scheduler.tick();
         }
+    }
+
+    /// A detector that always panics in `execute`.
+    struct PanicDetector;
+
+    impl DetectorNode for PanicDetector {
+        fn meta(&self) -> rvo_detector::detector::DetectorMeta {
+            rvo_detector::detector::DetectorMeta {
+                id: "panic",
+                max_fps: 1000.0,
+                dependencies: &[],
+                output_signals: &[],
+                cost_hint: DetectorCostHint::Low,
+                requires_frame: false,
+            }
+        }
+
+        fn execute(&mut self, _ctx: &DetectorContext<'_>) -> DetectorResult {
+            panic!("detector boom");
+        }
+    }
+
+    #[test]
+    fn panicking_detector_does_not_kill_scheduler() {
+        // Silence the panic backtrace this test deliberately triggers.
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+
+        let (_frame_tx, frame_rx) = bounded(5);
+
+        let detectors = vec![Box::new(PanicDetector) as Box<dyn DetectorNode>];
+        let event_engine = EventEngine::new(EventDefinition {
+            event_type: EventType::DummyEvent,
+            condition: Condition::single_gte(SignalType::Dummy, 1),
+            duration_ns: 0,
+            cooldown_ns: 1_000_000_000,
+        });
+
+        let frame_buffer = Arc::new(Mutex::new(FrameBuffer::new(8)));
+        let (clip_tx, _clip_rx) = bounded(1);
+        let clip_manager = ClipManager::new(
+            clip_tx,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Arc::clone(&frame_buffer),
+        );
+        let (event_tx, _event_rx) = bounded(1);
+        let event_publisher = EventPublisher::new(event_tx);
+
+        let mut scheduler = Scheduler::new(
+            detectors,
+            event_engine,
+            frame_rx,
+            clip_manager,
+            event_publisher,
+            frame_buffer,
+        );
+
+        // Without panic isolation the first tick would unwind, poison the
+        // scheduler, and fail this test. With it, every tick returns normally
+        // and the detector is disabled after its first (caught) failure.
+        for _ in 0..50 {
+            scheduler.tick();
+        }
+
+        std::panic::set_hook(prev);
     }
 }
 /*

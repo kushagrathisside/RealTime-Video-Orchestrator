@@ -17,8 +17,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
+      # Pinned to match rust-toolchain.toml so a floating-stable bump can't
+      # break CI via newly-promoted clippy lints.
+      - name: Install Rust (pinned)
+        uses: dtolnay/rust-toolchain@1.95.0
         with:
           components: clippy, rustfmt
 
@@ -58,3 +60,13 @@ jobs:
 
       - name: cargo fmt
         run: cargo fmt --all -- --check
+
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: cargo-audit (RustSec advisory scan)
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

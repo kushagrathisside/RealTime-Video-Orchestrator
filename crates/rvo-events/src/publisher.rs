@@ -29,6 +29,9 @@ impl EventPublisher {
                 eprintln!("[EVENT] Publisher channel disconnected");
             }
         }
+        METRICS
+            .event_queue_depth
+            .store(self.tx.len() as u64, Ordering::Relaxed);
     }
 }
 

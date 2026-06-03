@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 once_cell = "1.19"
 tiny_http = "0.12"
+hdrhistogram = "7"

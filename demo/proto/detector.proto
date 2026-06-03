@@ -1,0 +1,24 @@
+// Keep in sync with crates/rvo-remote/proto/detector.proto.
+syntax = "proto3";
+
+package rvo.detect.v1;
+
+service Detector {
+  rpc Detect(DetectRequest) returns (DetectResponse);
+}
+
+message DetectRequest {
+  bytes frame_jpeg = 1;
+  uint64 frame_id = 2;
+  uint64 ts_ns = 3;
+}
+
+message DetectResponse {
+  repeated SignalOut signals = 1;
+}
+
+message SignalOut {
+  string signal_type = 1;
+  uint64 value = 2;
+  uint64 ttl_ns = 3;
+}
