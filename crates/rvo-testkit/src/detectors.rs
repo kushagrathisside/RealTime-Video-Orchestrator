@@ -157,27 +157,50 @@ pub struct LatencyDetector {
     latency: Duration,
     jitter: Option<Duration>,
     rng: SmallRng,
+    /// Reported cost classification — independent of inner's cost so callers can
+    /// choose whether the scheduler should shed this detector under load.
+    cost_hint: DetectorCostHint,
+    /// Declared fps limit — determines the per-tick time budget used by the
+    /// overrun check. Set this to the fps at which the detector is *expected*
+    /// to run, not the fps it can sustain given the artificial latency.
+    max_fps: f64,
 }
 
 impl LatencyDetector {
+    /// `cost_hint`: whether the scheduler may back this detector off under load.
+    /// `max_fps`: the declared fps budget; if actual runtime exceeds
+    ///   `(1/max_fps) × OVERRUN_FACTOR`, the scheduler triggers backoff (only
+    ///   when `cost_hint` is `Medium` or `High`).
     pub fn new(
         inner: Box<dyn DetectorNode>,
         latency: Duration,
         jitter: Option<Duration>,
         seed: u64,
+        cost_hint: DetectorCostHint,
+        max_fps: f64,
     ) -> Self {
         Self {
             inner,
             latency,
             jitter,
             rng: SmallRng::seed_from_u64(seed),
+            cost_hint,
+            max_fps,
         }
     }
 }
 
 impl DetectorNode for LatencyDetector {
     fn meta(&self) -> DetectorMeta {
-        self.inner.meta()
+        let inner = self.inner.meta();
+        DetectorMeta {
+            id: inner.id,
+            max_fps: self.max_fps,
+            dependencies: inner.dependencies,
+            output_signals: inner.output_signals,
+            cost_hint: self.cost_hint,
+            requires_frame: inner.requires_frame,
+        }
     }
 
     fn execute(&mut self, ctx: &DetectorContext<'_>) -> DetectorResult {

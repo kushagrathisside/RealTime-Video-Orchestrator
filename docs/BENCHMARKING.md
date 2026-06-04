@@ -31,14 +31,17 @@ keep the control-loop tail latency flat even when detectors are slow or the came
 overloaded. Numbers are required to substantiate that claim in any interview, tech report, or
 paper. Without them the architecture is a design argument, not an evaluated system.
 
-The two specific properties that must be demonstrated:
+The three specific properties that must be demonstrated:
 
 | Property | Measured by |
 |---|---|
-| Decoupled inference: slow remote call does not block the tick | Fig 1 — tick p99 stays near baseline as in-process blocking grows |
-| Graceful degradation: overload raises drops, not latency | Fig 3 — frame drops rise with fps, tick p99 stays bounded |
+| HOL blocking: in-process detector latency appears directly in tick p99 | Fig 1 — tick p99 tracks `blocking_*` detector sleep |
+| Load-shedding: High-cost overrunning detector is backed off, tick p99 stays near-baseline | Fig 2 — `load_shed` time-series: skips rise, tick p99 stays low |
+| Graceful degradation: overload raises drops, not latency | Fig 3 — `overload_*`: frame drops rise with fps, tick p99 stays bounded |
 
-Everything else (Fig 2 load-shedding, Fig 4 CDF) provides supporting context.
+Fig 4 (CDF) and Fig 5 (fps reference) provide supporting context.
+See [BENCHMARK_REMEDIATION_REPORT.md](BENCHMARK_REMEDIATION_REPORT.md) for an explanation
+of why earlier scenario designs did not exercise these paths and what was changed.
 
 ---
 
@@ -51,12 +54,11 @@ crates/rvo-bench/
   src/lib.rs                ← HistSummary, CounterSnapshot, CsvWriter shared by harness
 
 scripts/
-  bench.sh                  ← runs all 11 load-harness scenarios, produces CSVs
-  plot.py                   ← reads CSVs, writes 4 PDF figures
+  bench.sh                  ← runs all 15 load-harness scenarios, produces CSVs
 
-target/bench_results/       ← harness output (CSVs); created by bench.sh
+target/bench_results/       ← harness output (CSVs); gitignored
 target/criterion/           ← criterion HTML reports; created by cargo bench
-docs/report/figures/        ← final PDF figures; created by plot.py
+docs/report/figures/        ← generated figures; gitignored
 ```
 
 **Micro-benchmarks** (criterion) measure the cost of a single operation in isolation:
@@ -173,25 +175,49 @@ bash scripts/bench.sh --scenarios "baseline blocking_3ms blocking_50ms load_shed
   --out-dir target/bench_results
 ```
 
-### The 11 scenarios
+### The 15 scenarios
+
+#### HOL-blocking group — no shedding (cost=Low)
 
 | Scenario | Detectors | Frame rate | Purpose |
 |---|---|---|---|
-| `baseline` | none | ~30fps (trickle) | Pure scheduler overhead — the floor |
+| `baseline` | none | ~30fps | Pure scheduler overhead — the floor |
 | `inproc_low` | DummyDetector (~0ms) | ~30fps | Cheap in-process baseline |
-| `blocking_1ms` | LatencyDetector(1ms) | ~30fps | HOL blocking — mild |
-| `blocking_3ms` | LatencyDetector(3ms) | ~30fps | HOL blocking — moderate |
-| `blocking_10ms` | LatencyDetector(10ms) | ~30fps | HOL blocking — heavy |
-| `blocking_50ms` | LatencyDetector(50ms) | ~30fps | HOL blocking — severe |
-| `load_shed` | Dummy + LatencyDetector(50ms) | ~30fps | Load-shedding in action |
-| `fps_30` | DummyDetector | 30fps | Throughput baseline |
-| `fps_60` | DummyDetector | 60fps | Near-saturation |
-| `fps_120` | DummyDetector | 120fps | Drop-or-process boundary |
-| `fps_300` | DummyDetector | 300fps | Sustained overload |
+| `blocking_1ms` | LatencyDetector(1ms, Low, 30fps) | ~30fps | HOL blocking — mild |
+| `blocking_3ms` | LatencyDetector(3ms, Low, 30fps) | ~30fps | HOL blocking — moderate |
+| `blocking_10ms` | LatencyDetector(10ms, Low, 30fps) | ~30fps | HOL blocking — heavy |
+| `blocking_50ms` | LatencyDetector(50ms, Low, 30fps) | ~30fps | HOL blocking — severe |
 
-`LatencyDetector` wraps a real detector and adds a deterministic `thread::sleep`, simulating
-an in-process model of known cost. This is the controlled variable for the HOL-blocking
-experiment (Figure 1).
+#### Load-shedding group — backoff active (cost=High)
+
+| Scenario | Detectors | Frame rate | Purpose |
+|---|---|---|---|
+| `load_shed` | DummyDetector + LatencyDetector(50ms, **High**, **60fps**) | ~30fps | Backoff in action: tick p99 near-baseline |
+
+Why 60fps for the slow detector: budget = (1/60)×2 = 33ms. 50ms > 33ms → overrun fires → 500ms backoff.
+
+#### Overload group — slow tick, high fps (cost=Low)
+
+| Scenario | Detectors | Camera fps | Purpose |
+|---|---|---|---|
+| `overload_threshold` | LatencyDetector(5ms, Low, 1000fps) | 120fps | No drops — reference point |
+| `overload_moderate` | LatencyDetector(5ms, Low, 1000fps) | 300fps | Moderate drops (300 > ~182 tick/s) |
+| `overload_severe` | LatencyDetector(5ms, Low, 1000fps) | 600fps | Heavy drops |
+
+Effective tick rate ≈ 182/s (5ms detector + 0.5ms sleep). Low cost ensures the detector is never shed — we want it to slow the tick, not be skipped.
+
+#### fps reference group — fast detector, no drops
+
+| Scenario | Detectors | Camera fps | Purpose |
+|---|---|---|---|
+| `fps_30` | DummyDetector | 30fps | Fast-pipeline reference |
+| `fps_60` | DummyDetector | 60fps | 2× baseline |
+| `fps_120` | DummyDetector | 120fps | 4× baseline |
+| `fps_300` | DummyDetector | 300fps | 10× baseline (still no drops) |
+
+`LatencyDetector` wraps a real detector and adds a deterministic `thread::sleep`. The
+`cost_hint` and `max_fps` fields are now explicit constructor arguments — they are not
+inherited from the inner detector.
 
 ### What the harness prints during a run
 
@@ -268,29 +294,21 @@ summary CSV for end-of-run percentile comparisons.
 
 ## 7. Generating figures
 
-```bash
-# Install Python dependencies (once)
-pip install pandas matplotlib numpy
+See [PLOT_GUIDE.md](PLOT_GUIDE.md) for:
+- The complete CSV column schema
+- What each of the five figures shows, what axes to use, and what "good data" looks like
+- A plotting recipe that works in Python, R, or Excel
+- How to interpret the harness validation output
 
-# Generate all 4 figures from the latest bench results
-python3 scripts/plot.py \
-  --in-dir target/bench_results \
-  --out-dir docs/report/figures
-```
+Five figures are produced:
 
-Output:
-
-```
-docs/report/figures/
-  fig1_tick_p99_vs_detector_latency.pdf
-  fig2_load_shedding.pdf
-  fig3_throughput_vs_fps.pdf
-  fig4_tick_cdf.pdf
-```
-
-To regenerate a single figure, edit `scripts/plot.py` and call only that function from
-`main()`. Each figure function is independent and can be invoked in isolation during
-iteration.
+| Figure | File | Claim it supports |
+|---|---|---|
+| Fig 1 | `fig1_tick_p99_vs_detector_latency.pdf` | HOL blocking: tick p99 tracks detector sleep |
+| Fig 2 | `fig2_load_shedding.pdf` | Backoff keeps tick fast while shedding slow detector |
+| Fig 3 | `fig3_overload_graceful_degradation.pdf` | Drops rise under overload; tick p99 stays bounded |
+| Fig 4 | `fig4_tick_cdf.pdf` | Tail latency distribution per scenario |
+| Fig 5 | `fig5_fps_reference.pdf` | Fast pipeline: no drops at any fps (control experiment for Fig 3) |
 
 ---
 
@@ -341,28 +359,32 @@ is shed without starving the fast path."
 
 ---
 
-### Figure 3 — Throughput vs fps: graceful degradation
+### Figure 3 — Graceful degradation: overload_* scenarios
 
-**What it shows:** frame drops (left Y, red) and events emitted (right Y, blue) vs the
-synthetic camera fps (X-axis), across `fps_30` through `fps_300`.
+**What it shows:** frame drops (left Y, red) and tick p99 (right Y, blue) vs input fps,
+for `overload_threshold` (120fps), `overload_moderate` (300fps), `overload_severe` (600fps).
+
+**Setup:** all three use `LatencyDetector(5ms, Low, 1000fps)`. This runs on every eligible
+tick (min_interval = 1ms), slowing effective tick rate to ~182/s. Camera fps > 182 causes
+the bounded channel to saturate.
 
 **What to look for:**
-- Frame drops should be near zero up to the scheduler's processing capacity, then rise
-  sharply as the camera input exceeds what a single tick can drain.
-- Events emitted may plateau or decline at high fps because frames are dropped before the
-  detector can see them.
-- Crucially, tick p99 (visible in summary.csv) should NOT blow up as fps rises — drops are
-  the relief valve, not latency growth.
+- `overload_threshold` (120fps): zero drops — below saturation point
+- `overload_moderate` (300fps): substantial drops starting within the first second
+- `overload_severe` (600fps): much heavier drops
+- Tick p99 stays roughly constant across all three — drops absorb the excess, not latency
 
-**Key claim supported:** "bounded queues degrade gracefully under overload: excess frames
-are dropped rather than queued, keeping tick latency predictable."
+**Key claim supported:** "bounded queues degrade gracefully: excess frames are dropped
+rather than queued, keeping tick latency predictable under overload."
 
 **Red flags:**
-- Frame drops stay zero even at fps_300 — harness not actually dropping (check channel
-  capacity = 64 in load_harness.rs; at 300fps and a 500µs tick, that's 150ms of queue,
-  which can absorb bursts).
-- `tick_p99` in summary.csv grows with fps — means the scheduler is spending extra time
-  draining the frame buffer under high load.
+- Frame drops = 0 for `overload_moderate` → slow detector not running every tick; harness
+  validation will also `exit(1)` and print a diagnostic.
+- Tick p99 grows sharply with fps → something is queuing latency instead of shedding frames.
+
+**See also:** Figure 5 is the paired control — same fps range with DummyDetector (fast tick)
+produces zero drops at all fps. This isolates the slow detector as the cause of overload, not
+the fps itself.
 
 ---
 
@@ -427,13 +449,12 @@ print(combined.groupby("scenario")[["tick_p99_ns","tick_p999_ns"]].agg(["median"
 ## 10. Adding a new scenario
 
 1. Add the scenario name and detector list to `detectors_for()` in
-   [load_harness.rs:131](../crates/rvo-bench/src/bin/load_harness.rs#L131).
-2. If it needs a different camera fps, add it to `camera_fps_for()` at line 148.
-3. If it has a meaningful `detector_sleep_ms`, add it to the lookup at line 263.
-4. Add the scenario to `ALL_SCENARIOS` in [bench.sh:24](../scripts/bench.sh#L24).
-5. Add a label mapping in [plot.py:28](../scripts/plot.py#L28) so figures display it correctly.
-6. If the scenario should appear in Figure 4 (CDF), add it to `blocking_scenarios` at
-   [plot.py:167](../scripts/plot.py#L167).
+   [load_harness.rs](../crates/rvo-bench/src/bin/load_harness.rs).
+2. If it needs a different camera fps, add it to `camera_fps_for()`.
+3. If it has a meaningful `detector_sleep_ms`, add it to the lookup near the end of `run()`.
+4. Add the scenario to `ALL_SCENARIOS` in [bench.sh](../scripts/bench.sh).
+5. If the scenario should validate that a mechanism fired, add a case to `validate_scenario()`.
+6. Update [PLOT_GUIDE.md](PLOT_GUIDE.md) with the scenario's axes and expected output.
 
 ---
 
@@ -458,10 +479,10 @@ measurement session:
 rm -f target/bench_results/summary.csv
 ```
 
-### plot.py fails with "summary.csv not found"
+### Plotting tool cannot find `summary.csv`
 
 The harness must have completed at least one scenario with `--out-dir target/bench_results`.
-Check that `target/bench_results/summary.csv` exists before running `plot.py`.
+Check that `target/bench_results/summary.csv` exists before attempting to plot.
 
 ### Criterion shows high variance
 

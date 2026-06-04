@@ -7,8 +7,9 @@ Usage:
 Produces:
     fig1_tick_p99_vs_detector_latency.pdf   — HOL blocking effect
     fig2_load_shedding.pdf                  — load-shedding in action (time-series)
-    fig3_throughput_vs_fps.pdf              — graceful degradation under overload
+    fig3_overload_graceful_degradation.pdf  — overload: drops rise, tick p99 stays bounded
     fig4_tick_cdf.pdf                       — tick duration CDF per scenario
+    fig5_fps_reference.pdf                  — fast-pipeline reference (no drops at any fps)
 """
 import argparse
 import pathlib
@@ -26,17 +27,20 @@ except ImportError:
     sys.exit(1)
 
 LABEL_MAP = {
-    "baseline":     "No detectors",
-    "inproc_low":   "DummyDetector (~0ms)",
-    "blocking_1ms": "Blocking 1ms",
-    "blocking_3ms": "Blocking 3ms",
-    "blocking_10ms":"Blocking 10ms",
-    "blocking_50ms":"Blocking 50ms",
-    "load_shed":    "Dummy + Blocking 50ms",
-    "fps_30":   "30 fps",
-    "fps_60":   "60 fps",
-    "fps_120":  "120 fps",
-    "fps_300":  "300 fps",
+    "baseline":           "No detectors",
+    "inproc_low":         "DummyDetector (~0ms)",
+    "blocking_1ms":       "Blocking 1ms",
+    "blocking_3ms":       "Blocking 3ms",
+    "blocking_10ms":      "Blocking 10ms",
+    "blocking_50ms":      "Blocking 50ms",
+    "load_shed":          "Dummy + Blocking 50ms (shed)",
+    "overload_threshold": "5ms detector, 120fps (no drops)",
+    "overload_moderate":  "5ms detector, 300fps (moderate drops)",
+    "overload_severe":    "5ms detector, 600fps (heavy drops)",
+    "fps_30":             "DummyDetector, 30fps",
+    "fps_60":             "DummyDetector, 60fps",
+    "fps_120":            "DummyDetector, 120fps",
+    "fps_300":            "DummyDetector, 300fps",
 }
 
 PLT_STYLE = {
@@ -72,7 +76,7 @@ def load_timeseries(in_dir: pathlib.Path, scenario: str) -> pd.DataFrame | None:
     return df
 
 
-# ── Figure 1: tick p99 vs configured detector latency ───────────────────────
+# ── Figure 1: tick p99 vs configured detector latency (HOL blocking) ─────────
 
 def fig_tick_p99_vs_latency(df: pd.DataFrame, out: pathlib.Path):
     blocking = df[df["scenario"].str.startswith("blocking_")].copy()
@@ -101,7 +105,7 @@ def fig_tick_p99_vs_latency(df: pd.DataFrame, out: pathlib.Path):
         plt.close(fig)
 
 
-# ── Figure 2: load-shedding time-series ─────────────────────────────────────
+# ── Figure 2: load-shedding time-series ──────────────────────────────────────
 
 def fig_load_shedding(in_dir: pathlib.Path, out: pathlib.Path):
     df = load_timeseries(in_dir, "load_shed")
@@ -113,7 +117,7 @@ def fig_load_shedding(in_dir: pathlib.Path, out: pathlib.Path):
 
         ax1.plot(df["elapsed_s"], df["tick_p99_ms"], linewidth=1.5, color="steelblue")
         ax1.set_ylabel("Tick p99 (ms)")
-        ax1.set_title("Load-shedding: slow detector + DummyDetector running together")
+        ax1.set_title("Load-shedding: 50ms detector + DummyDetector — backoff keeps tick fast")
         ax1.grid(axis="y", alpha=0.3)
 
         ax2.bar(df["elapsed_s"], df["skips_delta"], width=0.9,
@@ -131,32 +135,42 @@ def fig_load_shedding(in_dir: pathlib.Path, out: pathlib.Path):
         plt.close(fig)
 
 
-# ── Figure 3: throughput vs fps ──────────────────────────────────────────────
+# ── Figure 3: overload — bounded queues shed frames, tick p99 stays bounded ──
 
-def fig_throughput_vs_fps(df: pd.DataFrame, out: pathlib.Path):
-    fps_rows = df[df["scenario"].str.startswith("fps_")].copy()
-    if fps_rows.empty:
-        print("[plot] No fps scenarios in summary; skipping fig3"); return
+def fig_overload_graceful_degradation(df: pd.DataFrame, out: pathlib.Path):
+    """Plot frame drops vs input fps for the overload_* scenarios.
 
-    fps_rows = fps_rows.sort_values("input_fps")
+    This is the primary graceful-degradation experiment. It shows that when the
+    scheduler is genuinely overloaded (camera fps > effective tick rate), excess
+    frames are dropped by the bounded channel rather than queuing up and blowing
+    out tick latency. The overload_threshold row (120fps, no drops) anchors the
+    no-overload end of the curve.
+    """
+    overload = df[df["scenario"].str.startswith("overload_")].copy()
+    if overload.empty:
+        print("[plot] No overload_* scenarios in summary; skipping fig3"); return
+
+    overload = overload.sort_values("input_fps")
+
     with plt.rc_context(PLT_STYLE):
         fig, ax = plt.subplots()
-        ax.plot(fps_rows["input_fps"], fps_rows["total_frame_drops"],
+        ax.plot(overload["input_fps"], overload["total_frame_drops"],
                 marker="o", linewidth=2, color="crimson", label="Frame drops (total)")
         ax2 = ax.twinx()
-        ax2.plot(fps_rows["input_fps"], fps_rows["total_events"],
+        ax2.plot(overload["input_fps"], overload["tick_p99_ms"],
                  marker="s", linestyle="--", linewidth=1.5, color="steelblue",
-                 label="Events emitted (total)")
+                 label="Tick p99 (ms)")
         ax.set_xlabel("Camera input fps")
         ax.set_ylabel("Total frame drops", color="crimson")
-        ax2.set_ylabel("Total events emitted", color="steelblue")
-        ax.set_title("Throughput vs input fps — graceful degradation under overload")
+        ax2.set_ylabel("Tick p99 (ms)", color="steelblue")
+        ax.set_title("Graceful degradation: drops rise, tick p99 stays bounded\n"
+                     "(5ms slow detector, effective tick rate ≈ 182/s)")
         lines1, labels1 = ax.get_legend_handles_labels()
         lines2, labels2 = ax2.get_legend_handles_labels()
         ax.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
         ax.grid(axis="y", alpha=0.3)
         fig.tight_layout()
-        p = out / "fig3_throughput_vs_fps.pdf"
+        p = out / "fig3_overload_graceful_degradation.pdf"
         fig.savefig(p); print(f"[plot] wrote {p}")
         plt.close(fig)
 
@@ -182,13 +196,49 @@ def fig_tick_cdf(df: pd.DataFrame, out: pathlib.Path):
 
         ax.set_xlabel("Tick latency (ms)")
         ax.set_ylabel("Percentile (%)")
-        ax.set_title("Tick duration CDF — in-process detector latency effect")
+        ax.set_title("Tick duration CDF — HOL blocking effect on tail latency")
         ax.set_ylim(50, 100)
         ax.yaxis.set_major_formatter(ticker.FormatStrFormatter("%.1f"))
         ax.legend(fontsize=9)
         ax.grid(alpha=0.3)
         fig.tight_layout()
         p = out / "fig4_tick_cdf.pdf"
+        fig.savefig(p); print(f"[plot] wrote {p}")
+        plt.close(fig)
+
+
+# ── Figure 5: fps reference — fast pipeline shows no drops at any fps ────────
+
+def fig_fps_reference(df: pd.DataFrame, out: pathlib.Path):
+    """Fast-pipeline reference: DummyDetector at 30–300fps never drops frames.
+
+    Paired with Figure 3, this distinguishes the cause of drops in the overload
+    group: a fast detector + high fps does NOT produce drops; a slow detector +
+    high fps DOES. The slow detector is the bottleneck, not the fps itself.
+    """
+    fps_rows = df[df["scenario"].str.startswith("fps_")].copy()
+    if fps_rows.empty:
+        print("[plot] No fps_* scenarios in summary; skipping fig5"); return
+
+    fps_rows = fps_rows.sort_values("input_fps")
+    with plt.rc_context(PLT_STYLE):
+        fig, ax = plt.subplots()
+        ax.plot(fps_rows["input_fps"], fps_rows["total_frame_drops"],
+                marker="o", linewidth=2, color="crimson", label="Frame drops (DummyDetector)")
+        ax2 = ax.twinx()
+        ax2.plot(fps_rows["input_fps"], fps_rows["tick_p99_ms"],
+                 marker="s", linestyle="--", linewidth=1.5, color="steelblue",
+                 label="Tick p99 (ms)")
+        ax.set_xlabel("Camera input fps")
+        ax.set_ylabel("Total frame drops", color="crimson")
+        ax2.set_ylabel("Tick p99 (ms)", color="steelblue")
+        ax.set_title("Fast-pipeline reference: DummyDetector, no drops up to 300fps")
+        lines1, labels1 = ax.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
+        ax.grid(axis="y", alpha=0.3)
+        fig.tight_layout()
+        p = out / "fig5_fps_reference.pdf"
         fig.savefig(p); print(f"[plot] wrote {p}")
         plt.close(fig)
 
@@ -206,8 +256,9 @@ def main():
 
     fig_tick_p99_vs_latency(df, args.out_dir)
     fig_load_shedding(args.in_dir, args.out_dir)
-    fig_throughput_vs_fps(df, args.out_dir)
+    fig_overload_graceful_degradation(df, args.out_dir)
     fig_tick_cdf(df, args.out_dir)
+    fig_fps_reference(df, args.out_dir)
 
     print(f"\n[plot] figures written to {args.out_dir}/")
 

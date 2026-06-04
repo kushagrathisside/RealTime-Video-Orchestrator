@@ -22,13 +22,23 @@ OUT_DIR="target/bench_results"
 HARNESS="target/release/load_harness"
 
 ALL_SCENARIOS=(
+    # HOL-blocking group: tick p99 tracks detector sleep (no shedding)
     baseline
     inproc_low
     blocking_1ms
     blocking_3ms
     blocking_10ms
     blocking_50ms
+
+    # Load-shedding group: slow detector backed off, tick p99 near-baseline
     load_shed
+
+    # Overload group: slow tick + high fps → queue saturates → frame drops
+    overload_threshold
+    overload_moderate
+    overload_severe
+
+    # fps reference group: fast detector, no drops at any fps
     fps_30
     fps_60
     fps_120
@@ -73,5 +83,4 @@ echo "[bench] All done. Results in $OUT_DIR/"
 echo "  summary:      $OUT_DIR/summary.csv"
 echo "  time-series:  $OUT_DIR/*_timeseries.csv"
 echo ""
-echo "To generate figures:"
-echo "  python3 scripts/plot.py --in-dir $OUT_DIR --out-dir docs/report/figures"
+echo "To generate figures, see docs/PLOT_GUIDE.md"

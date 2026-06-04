@@ -11,6 +11,12 @@ __pycache__/
 # Logs and local diagnostics
 *.log
 
+# Benchmark plotting script — local tool for paper/report writing, not part of the repo
+scripts/plot.py
+# Benchmark result CSVs and generated figures (local artefacts)
+target/bench_results/
+docs/report/figures/
+
 # Generated gRPC stubs (produced by demo/gen_protos.sh)
 demo/services/*_pb2.py
 demo/services/*_pb2_grpc.py
