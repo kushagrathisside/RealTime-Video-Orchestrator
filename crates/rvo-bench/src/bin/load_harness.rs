@@ -108,11 +108,12 @@ struct Cli {
     #[arg(long)]
     all: bool,
 
-    /// Measurement window per scenario in seconds (warm-up excluded).
+    /// Measurement window per scenario in seconds (excludes warm-up).
+    /// Total wall time per scenario = warmup_secs + duration_secs.
     #[arg(long, default_value_t = 30)]
     duration_secs: u64,
 
-    /// Warm-up period excluded from reported metrics (seconds).
+    /// Warm-up period in seconds. Excluded from all reported metrics.
     #[arg(long, default_value_t = 5)]
     warmup_secs: u64,
 
@@ -291,23 +292,41 @@ fn validate_scenario(scenario: &str, hist: &HistSummary, counters: &CounterSnaps
             );
         }
 
+        // overload_threshold is the reference scenario: 120fps < ~182/s drain rate,
+        // so zero drops is the CORRECT result. This arm must appear before the
+        // starts_with("overload_") catch-all — Rust matches top-to-bottom and
+        // "overload_threshold".starts_with("overload_") is true.
+        "overload_threshold" => {
+            if counters.frame_drops > 0 {
+                eprintln!(
+                    "\n[BENCH VALIDATION WARN] overload_threshold: {} unexpected frame drops. \
+                     This reference scenario should not drop frames (120fps < ~182/s drain). \
+                     Check camera fps and effective tick rate.",
+                    counters.frame_drops
+                );
+            } else {
+                println!(
+                    "[BENCH VALIDATION OK] overload_threshold: 0 frame drops \
+                     (120fps below drain capacity of ~182/s, as expected)"
+                );
+            }
+        }
+
         s if s.starts_with("overload_") => {
-            // The camera fps exceeds the effective tick rate, so the bounded
+            // The camera fps exceeds the effective tick rate (~182/s), so the bounded
             // frame channel must saturate and drop frames. Zero drops means the
-            // drain rate was actually faster than the feed rate — the detector
-            // is not slowing the tick enough or the camera fps is too low.
+            // drain rate was actually >= the feed rate — the slow detector is not
+            // running on every tick or the camera fps is too low.
             if counters.frame_drops == 0 {
                 eprintln!(
                     "\n[BENCH VALIDATION FAIL] {}: zero frame drops. \
                      Queue never saturated. Effective tick rate >= camera fps. \
-                     Check that the slow detector is actually running on every tick \
-                     (max_fps, min_interval) and that camera fps exceeds 182/s.",
+                     Check that the slow detector runs on every tick \
+                     (max_fps=1000, min_interval=1ms) and that camera fps exceeds 182/s.",
                     s
                 );
                 std::process::exit(1);
             }
-            // overload_threshold intentionally has no drops (120fps < 182/s drain)
-            // — handled by the `_` arm below, not this arm.
             println!(
                 "[BENCH VALIDATION OK] {}: {} frame drops in run \
                  (bounded queue saturated as expected)",
@@ -384,12 +403,18 @@ fn run(cli: &Cli) -> std::io::Result<()> {
         let elapsed = start.elapsed();
         if in_warmup && elapsed >= warmup {
             in_warmup = false;
+            // Reset metrics so histograms and counters cover only the measurement
+            // window, not warm-up. Without this, reported percentiles include
+            // warm-up samples and total_ticks includes warm-up ticks.
+            METRICS.reset();
             last_sample = Instant::now();
             last_counters = CounterSnapshot::capture();
             println!("[harness] warm-up done, measuring ...");
         }
 
-        if elapsed >= total {
+        // Break after warmup + measurement window, so --duration-secs is the
+        // actual measurement window, not the total including warm-up.
+        if elapsed >= warmup + total {
             break;
         }
 
@@ -397,7 +422,9 @@ fn run(cli: &Cli) -> std::io::Result<()> {
             let now_counters = CounterSnapshot::capture();
             let delta = now_counters.delta_since(&last_counters);
             let hist = HistSummary::capture();
-            let elapsed_ms = start.elapsed().as_millis() as u64;
+            // Normalize to measurement start (0 at warmup end) so Figure 2
+            // time-series plots have a 0-based X-axis in the paper.
+            let elapsed_ms = elapsed.saturating_sub(warmup).as_millis() as u64;
             ts_csv.write_time_series_row(elapsed_ms, &delta, &hist)?;
             last_counters = now_counters;
             last_sample = Instant::now();

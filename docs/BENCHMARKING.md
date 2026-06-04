@@ -169,7 +169,7 @@ automatically before the first scenario starts.
 ./target/release/load_harness --scenario load_shed --out-dir /tmp/bench
 ```
 
-### The 15 scenarios
+### The 14 scenarios
 
 #### HOL-blocking group — no shedding (cost=Low)
 
@@ -265,7 +265,7 @@ One row per sample interval (default 1s). Source for Figure 2 (load-shedding tim
 
 | Column | Unit | Meaning |
 |---|---|---|
-| `elapsed_ms` | ms | Wall time since harness start |
+| `elapsed_ms` | ms | Wall time since measurement start (0 = end of warm-up) |
 | `ticks_delta` | count | Ticks fired in this interval |
 | `execs_delta` | count | execute() calls in this interval |
 | `skips_delta` | count | Gate skips in this interval — rising = load-shedding |
@@ -458,12 +458,19 @@ print(combined.groupby("scenario")[["tick_p99_ns","tick_p999_ns"]].agg(["median"
 
 ### `tick_p99` equals exactly `sleep_ms` for every blocking scenario
 
-The load-shedding backoff is not activating. Likely cause: the `LatencyDetector` is set to
-`cost_hint = Low` (Low-cost detectors are never backed off, by design). Check
-[load_harness.rs:119](../crates/rvo-bench/src/bin/load_harness.rs#L119) — `LatencyDetector`
-delegates to `DummyDetector`'s `cost_hint`, which is Low. To demonstrate backoff, use
-`cost_hint = High` (requires a custom detector wrapper) or use `blocking_50ms` which exceeds
-any budget and will trigger backoff via the OVERRUN_FACTOR gate.
+This is expected for the `blocking_*` scenarios — they are designed with `cost_hint = Low`,
+which means the scheduler never backs them off. These scenarios demonstrate the worst case: a
+synchronous in-process detector that hogs the tick loop.
+
+If the `load_shed` scenario (which uses `cost_hint = High`) also shows `tick_p99 ≈ 50ms`,
+backoff is not activating. Check:
+
+1. `LatencyDetector` in `load_shed` must be constructed with `DetectorCostHint::High` and
+   `max_fps = 60.0`. Budget = (1/60)×2 = 33ms. The 50ms sleep must exceed this.
+2. The `total_skips` column in `summary.csv` must be > 0 — skips mean the detector is being
+   backed off. Zero skips means the overrun check never fired.
+3. If running on WSL2, jitter is high enough that the 50ms sleep may not reliably exceed
+   33ms in the scheduler's measurement window. Run on bare-metal.
 
 ### summary.csv keeps appending across runs
 
@@ -544,14 +551,16 @@ A template, fill in the blanks from `summary.csv`:
 
 ### 12.4 Figures
 
-Embed all four PDFs from `docs/report/figures/` in the LaTeX source. Each figure should
+Embed all five PDFs from `docs/report/figures/` in the LaTeX source. Each figure should
 have a caption that explicitly names what the X and Y axes measure and what the key takeaway
 is. Do not embed raw CSV values in figure captions — state the claim the figure supports.
 
 ### 12.5 Limitations to state honestly
 
-- Harness uses `thread::sleep(500µs)` between ticks, so maximum achieved rate is ~2 kHz,
-  not the theoretical 1 kHz target. Real-world deployment would remove this ceiling.
+- Harness uses `thread::sleep(500µs)` between ticks, capping the tick rate at ~2 kHz.
+  This is a harness-imposed ceiling, not the hardware limit. A production scheduler with a
+  monotonic timer and no artificial sleep would achieve a higher rate; remove this ceiling
+  before quoting a throughput number as a deployment capacity figure.
 - Coordinated omission: latency is measured from tick-start, not from frame arrival time.
   Queuing delay at the camera channel is not captured.
 - Single-machine, single-process evaluation. Distributed scheduling, NUMA effects, and

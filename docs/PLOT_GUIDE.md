@@ -54,7 +54,7 @@ All output lands in `target/bench_results/` (gitignored). Two file types:
 
 | Column | Unit | Description |
 |---|---|---|
-| `elapsed_ms` | ms | Wall time since harness start |
+| `elapsed_ms` | ms | Wall time since measurement start (0 = end of warm-up) |
 | `ticks_delta` | count | Ticks in this sample interval |
 | `execs_delta` | count | execute() calls in this interval |
 | `skips_delta` | count | Gate skips in this interval |
