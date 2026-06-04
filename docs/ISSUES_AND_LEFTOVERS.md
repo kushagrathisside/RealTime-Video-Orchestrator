@@ -7,6 +7,13 @@ tracks what is resolved vs. still open in the current codebase.
 
 All items below have been fixed in source and are reflected in the current code.
 
+### Verification
+
+- **`cargo check --workspace` / `cargo test` / `cargo clippy` verified** — CI
+  passes on all commits on `main`. The full workspace compiles and all tests
+  pass. `serde` derives, `Condition` DSL `Clone` propagation, and the
+  `imgcodecs` feature are all confirmed working.
+
 ### Build and Wiring
 
 - **rvo-camera exports** — `lib.rs` re-exports `start_camera`, `CameraConfig`,
@@ -72,26 +79,6 @@ All items below have been fixed in source and are reflected in the current code.
   the planned Frame type unification.
 
 ## Open Items
-
-### Verification (P0)
-
-**`cargo check --workspace` not yet run against the full fixed codebase.**
-The fixes are source-level and consistent, but the actual compiler result is
-the authority. This is the first thing to do before trusting any of the above.
-
-```sh
-cargo check --workspace
-cargo test --workspace
-cargo clippy --workspace -- -D warnings
-```
-
-Known areas that may need adjustment after a real compile:
-- `Event` and `EventType` now derive `Serialize` — `serde` must be in scope
-  wherever those types are pattern-matched exhaustively.
-- The `Condition` DSL adds a `Clone` bound on `EventDefinition` — verify this
-  propagates through `EventEngine`.
-- OpenCV `imgcodecs` feature must be active for `imwrite` to compile in the
-  encoder.
 
 ### Evidence (P1)
 

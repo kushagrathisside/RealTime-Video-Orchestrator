@@ -112,7 +112,7 @@ Implements the condition DSL (`All` / `Any` over `SignalPredicate`), `EventDefin
 The orchestration loop. Each `tick()` drains camera frames into the buffer, snapshots the newest frame, evaluates each detector (FPS gate, backoff gate, dependency gate, frame-required gate), runs eligible detectors, stores produced signals, runs the event engine, and dispatches events to publishers and the clip manager. This is the core of the runtime.
 
 ### `rvo-clips`
-`ClipManager`: receives clip jobs triggered by the event engine. Spawns a post-roll thread that sleeps for the configured duration, then locks the frame buffer, slices frames, and sends the job to the encoder via `try_send`. The encoder worker writes JPEG frames and a `meta.json` sidecar. All of this is off the live path.
+`ClipManager`: receives clip jobs triggered by the event engine. `on_event` is non-blocking: it anchors the clip window to the newest frame timestamp and enqueues a `PendingJob` into a bounded queue (capacity 16). A single long-lived worker thread drains this queue — for each job it sleeps until the post-roll window closes, then locks the frame buffer briefly to slice frames, and hands them to the encoder via `try_send`. No per-event thread is spawned. The encoder worker writes JPEG frames and a `meta.json` sidecar. All of this is off the live path.
 
 ### `rvo-metrics`
 Global atomic counters and an HTTP server. `/metrics` serves Prometheus text format. `/health` returns `200 ok` as a liveness check. Counters cover frame drops, scheduler ticks, detector executions, skips, failures, aggregate latency, event emissions, clip drops, and event drops.
@@ -150,9 +150,10 @@ Scheduler.tick()  [1 ms loop]
     |        +--→ stdout logger
     |        +--→ JSON-lines file sink (if configured)
     |
-    +--→ ClipManager  [try_send, cap 8 — drop on full → rvo_clip_drops_total]
+    +--→ ClipManager  [try_send to pending queue, cap 16 — drop on full → rvo_clip_drops_total]
               |
-              v  [spawned post-roll thread: sleep after_ns, then lock buffer]
+              v  [single worker thread: sleep until fire_at, lock buffer briefly, slice frames]
+              |  [try_send to encoder, cap 8 — drop on full → rvo_clip_drops_total]
          Encoder Worker
               |
               v
@@ -165,7 +166,8 @@ Scheduler.tick()  [1 ms loop]
 |---|---|---|
 | Camera → Scheduler | 5 frames | Drop, count `rvo_frame_drops_total` |
 | Scheduler → EventPublisher | 64 events | Drop, count `rvo_event_drops_total` |
-| Scheduler → ClipManager | 8 jobs | Drop, count `rvo_clip_drops_total` |
+| Scheduler → ClipManager (pending queue) | 16 jobs | Drop, count `rvo_clip_drops_total` |
+| ClipManager worker → Encoder | 8 jobs | Drop, count `rvo_clip_drops_total` |
 | FrameBuffer | 300 frames (~10 s at 30 fps) | Overwrite oldest |
 
 No unbounded queue exists anywhere.
@@ -191,9 +193,9 @@ The capacity choices are deliberate:
 
 The `Arc<Mutex<FrameBuffer>>` is the only shared mutable state between the live path and the evidence path. The invariant is: the lock is held only for the duration of a buffer operation, never across a blocking call.
 
-The scheduler holds the lock briefly to push a frame and to read the newest timestamp. The post-roll thread holds the lock briefly to call `slice()`. The post-roll thread sleeps for the post-roll duration *before* acquiring the lock, not *while* holding it. This means the live path is never contending with a sleeping thread.
+The scheduler holds the lock briefly to push a frame and to read the newest timestamp. When an event fires, `on_event` holds the lock briefly to read `newest_instant()` (anchoring the clip window), then releases immediately — no sleeping is done under the lock. The single post-roll worker holds the lock briefly to call `slice()`, and only after sleeping until the post-roll window closes. The lock is never held while sleeping.
 
-If the lock were held across the sleep, a post-roll wait of 2 seconds would stall the scheduler tick for 2 seconds. The current design makes post-roll contention a brief critical section at the start and end, not across the wait.
+This means there is at most one thread (the worker) competing with the scheduler for the frame buffer lock, and that contention window is a single `slice()` call — not the entire post-roll duration. The previous design (one thread per event) would have had N threads competing simultaneously at the moment their post-roll windows expired; that unbounded concurrency no longer exists.
 
 ### 5.3 Sequential detector execution
 
@@ -292,13 +294,9 @@ All detectors share the same scheduler tick thread. A detector that takes 30 ms 
 
 In a pipeline where high-cost detectors run at low FPS alongside low-cost detectors at high FPS, this can cause the low-cost detectors to miss their timing windows on ticks where a high-cost detector runs.
 
-### Mutex contention under concurrent post-roll threads
+### Bounded pending-queue depth limits burst clip capture
 
-Each event triggers a post-roll thread that eventually locks the frame buffer to call `slice()`. Multiple events in a short window can spawn multiple concurrent post-roll threads. At the end of each post-roll wait, all threads compete for the frame buffer lock simultaneously.
-
-The lock hold time for `slice()` is proportional to the number of frames in the clip window. At 30 fps with a 10-second post-roll, that is 300 frames. On a slow machine, this can introduce scheduler tick jitter at the moment multiple clips mature.
-
-The mitigation would be to add a semaphore limiting concurrent post-roll readers, or to move frame slicing into the encoder worker (accepting a brief lock hold at enqueue time, not at sleep completion).
+`ClipManager` uses a single worker thread and a bounded pending queue (capacity 16). A burst of more than 16 confirmed events in flight simultaneously will start dropping clip jobs, counted as `rvo_clip_drops_total`. This is intentional — the old design spawned one thread per event, which was the only unbounded resource path in the system. The current design trades worst-case clip capture completeness for strict resource bounds. If 16 is too small for a high-event workload, `PENDING_CAP` can be increased, but memory growth is proportional to that capacity times the post-roll duration.
 
 ### Global metric atomics in parallel tests
 
@@ -308,7 +306,7 @@ The workaround is `cargo test -- --test-threads=1`. The fix requires per-instanc
 
 ### Post-roll clip timing requires test accommodation
 
-`ClipManager` spawns a thread that sleeps for `clip_after` before slicing the buffer. Any test that reads `clip_rx` must wait longer than `clip_after` before asserting. This is a real-time dependency in an otherwise deterministic test.
+`ClipManager` uses a single worker thread that sleeps until each job's `fire_at` before slicing the buffer. Any test that reads `clip_rx` must wait longer than `clip_after` before asserting, since there is no signal back to the test when the worker finishes sleeping.
 
 Until clock injection is implemented, tests must use a short but non-zero `clip_after` and sleep at least that long before asserting on clip output.
 
@@ -316,7 +314,7 @@ Until clock injection is implemented, tests must use a short but non-zero `clip_
 
 The backoff policy uses only execution latency as input. A detector that runs fast but produces a burst of events can saturate the event publisher channel (capacity 64) without triggering any backoff. Similarly, a ClipManager that spawns many post-roll threads can exhaust the encoder queue (capacity 8) without affecting detector scheduling.
 
-Incorporating downstream queue depth into the shedding policy would make the system more holistically self-limiting under load.
+Incorporating downstream queue depth into the shedding policy would make the system more holistically self-limiting under load. For example, a detector that fires many events per tick could saturate the EventPublisher channel (capacity 64) or fill the ClipManager pending queue (capacity 16) without affecting detector scheduling.
 
 ### Static lifetime on `DetectorMeta` output lists
 
@@ -476,6 +474,17 @@ cargo test -- --test-threads=1  # if metric assertions are sensitive to parallel
 ---
 
 ## 9. Repo Structure
+
+### Proto file sync
+
+The `rvo.detect.v1.Detector` proto is defined in two locations:
+
+- **Canonical**: `crates/rvo-remote/proto/detector.proto` — used by the Rust `tonic-build` codegen.
+- **Demo copy**: `demo/proto/detector.proto` — used by the Python stub services in `demo/services/`.
+
+The demo copy carries a comment (`// Keep in sync with crates/rvo-remote/proto/detector.proto`) but sync is currently manual. When changing the proto, update both files. The canonical copy has full doc comments; the demo copy intentionally has minimal comments. A CI check enforcing field-level equivalence is future work.
+
+---
 
 ```
 Cargo.toml                      workspace members

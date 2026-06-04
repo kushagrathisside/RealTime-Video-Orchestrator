@@ -77,9 +77,9 @@ spam. The thread does not panic on open or read failure.
 - `newest_frame()` / `newest_instant()` return `Option` (safe on empty buffer).
 
 The buffer is wrapped in `Arc<Mutex<FrameBuffer>>` and shared between the
-Scheduler (writes, tick-driven) and ClipManager (post-roll reads from spawned
-threads). The lock is held only for the brief push/read operations, so
-contention between the scheduler tick and post-roll threads is minimal.
+Scheduler (writes, tick-driven) and the ClipManager worker thread (post-roll
+reads). The lock is held only for the brief push/read operations, so
+contention between the scheduler tick and the worker is minimal.
 
 ## Detector Model
 
@@ -188,12 +188,19 @@ calls `ClipManager`.
 
 ## Evidence Pipeline
 
-`ClipManager::on_event`:
+`ClipManager` uses two stages:
 
+**`on_event` (called on the scheduler tick thread):**
 1. Lock buffer, read `newest_instant()` → None: drop, count `rvo_clip_drops_total`.
-2. Compute clip window `[event_ts − before, event_ts + after]`.
-3. Spawn a thread: sleep `after`, then lock buffer, slice frames, `try_send` to encoder.
-4. On full encoder queue: count `rvo_clip_drops_total`.
+2. Compute clip window `[event_ts − before, event_ts + after]` and `fire_at = now + after`.
+3. `try_send` a `PendingJob` into the bounded pending queue (capacity 16).
+4. On full pending queue: drop, count `rvo_clip_drops_total`. Never blocks, never spawns a thread.
+
+**Single worker thread (runs for the lifetime of `ClipManager`):**
+1. Drain `PendingJob`s from the pending queue.
+2. Sleep until `fire_at` (post-roll window closes).
+3. Lock buffer, `slice(start, end)` frames, release lock.
+4. `try_send` `(ClipJob, Vec<Frame>)` to encoder. On full encoder queue (capacity 8): count `rvo_clip_drops_total`.
 
 Encoder worker:
 

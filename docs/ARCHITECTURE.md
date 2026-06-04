@@ -36,9 +36,10 @@ Scheduler.tick()
     |        +--→ stdout logger
     |        +--→ JSON-lines file sink  (optional)
     |
-    +--→ ClipManager  (spawns post-roll thread — non-blocking)
+    +--→ ClipManager  (try_send to pending queue, cap 16 — non-blocking, drops on full)
               |
-              v  (bounded queue, capacity 8 — drops on full)
+              v  (single worker thread: sleeps until post-roll window closes, slices buffer)
+              |  (try_send to encoder, cap 8 — drops on full)
          Encoder Worker
               |
               v
@@ -52,7 +53,8 @@ Every handoff in the system uses a bounded structure:
 | Handoff | Bound | Overflow behavior |
 |---|---|---|
 | Camera → Scheduler | Channel cap 5 | Drop frame, count `rvo_frame_drops_total` |
-| Scheduler → Encoder | Channel cap 8 | Drop clip job, count `rvo_clip_drops_total` |
+| Scheduler → ClipManager (pending queue) | Channel cap 16 | Drop clip job, count `rvo_clip_drops_total` |
+| ClipManager worker → Encoder | Channel cap 8 | Drop clip job, count `rvo_clip_drops_total` |
 | Scheduler → EventPublisher | Channel cap 64 | Drop event, count `rvo_event_drops_total` |
 | FrameBuffer | 300 frames (~10 s @ 30 fps) | Overwrite oldest |
 
@@ -65,9 +67,11 @@ evidence pipeline. It uses `Arc<Mutex<FrameBuffer>>`:
 
 - **Scheduler** holds a clone of the Arc. During each tick, it locks briefly
   to drain frames and snapshot the newest frame, then releases.
-- **ClipManager** holds a clone of the Arc. When an event fires, it spawns a
-  thread that sleeps for the post-roll duration, then locks briefly to slice
-  frames, then releases. This thread never holds the lock while sleeping.
+- **ClipManager** holds a clone of the Arc. When an event fires, `on_event`
+  locks briefly to read `newest_instant()` (anchoring the clip window), then
+  releases. A single long-lived worker thread processes all pending jobs
+  sequentially: it sleeps until each job's post-roll window closes, then locks
+  briefly to slice frames, then releases. The lock is never held while sleeping.
 
 The lock is never held across a blocking operation, so the scheduler tick and
 post-roll threads contend only on brief read/write windows.
@@ -143,7 +147,7 @@ The evidence pipeline is explicitly best-effort:
 - Clip jobs use `try_send` — never blocks the live path.
 - The encoder thread works at its own pace.
 - Failed or slow encoding does not affect the scheduler.
-- Post-roll frames are captured by a sleeping thread, not by blocking the tick.
+- Post-roll frames are captured by a single long-lived worker thread, not per-event threads. The worker sleeps until each job's post-roll window closes, keeping thread count bounded regardless of event burst size.
 
 Evidence artifacts (JPEGs + meta.json) are written to `clips_dir`. Future work:
 video muxing into MP4/MKV, thumbnail extraction, metadata store.
