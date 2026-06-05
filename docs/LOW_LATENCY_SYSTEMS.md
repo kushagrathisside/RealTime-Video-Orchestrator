@@ -68,11 +68,12 @@ to it.
 **Role:** percentiles + tail-aware design are the language of the field. "We improved
 p99.9 from 40 ms to 8 ms" is a real claim; "we improved the average" usually isn't.
 
-> RVO: the metric `avg exec µs` is an average — a known weakness. The honest upgrade is a
-> latency **histogram** (e.g. HdrHistogram / Prometheus buckets) to report p50/p99 of
-> detector execution. The gRPC fan-out to multiple model nodes is exactly a
-> tail-at-scale situation — which is why each remote call is decoupled and TTL-bounded
-> (§9) rather than awaited inline.
+> RVO: the production `/metrics` endpoint reports aggregate counters (mean exec latency
+> via `rvo_detector_exec_ns_total / rvo_detector_exec_total`). The load harness (`rvo-bench`)
+> uses **HdrHistogram** to capture p50/p99/p99.9 of scheduler tick and detector exec latency
+> across 13 benchmark scenarios — this is where the percentile story lives. The gRPC fan-out
+> to multiple model nodes is exactly a tail-at-scale situation — which is why each remote
+> call is decoupled and TTL-bounded (§9) rather than awaited inline.
 
 ---
 
@@ -431,7 +432,7 @@ afterthoughts.
 | Bounded memory | 300-slot ring `FrameBuffer` (~10 s) |
 | Failure isolation | per-RPC timeout, threshold → `Failed` → detector disabled |
 | Decoupled fan-out | remote detector = worker thread + persistent gRPC channel |
-| Observability | Prometheus counters on `/metrics` (+ planned histograms) |
+| Observability | Prometheus counters on `/metrics`; HDR histograms (p50/p99/p99.9) in `rvo-bench` load harness |
 | Shared-nothing scale | one process per camera; O(1) hot-path node add |
 
 ---

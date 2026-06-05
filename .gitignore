@@ -33,3 +33,8 @@ Thumbs.db
 # Local environment files
 .env
 .env.*
+
+clips/*
+
+# Paper draft — local, not for publication tracking
+publishpaper/

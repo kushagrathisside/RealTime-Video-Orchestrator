@@ -515,10 +515,12 @@ demo/                           end-to-end gRPC demo
   services/model_service.py     trivial stub model service
   run_demo.sh, gen_protos.sh    harness
 docs/
-  ARCHITECTURE.md               design decisions and data flow
-  CURRENT_IMPLEMENTATION.md     implementation status
-  ROADMAP.md                    phased work plan
-  ISSUES_AND_LEFTOVERS.md       open issues and triage
+  ARCHITECTURE.md               data flow, component contracts, design boundaries
+  BENCHMARKING.md               benchmark suite reference (how to run, scenarios, CSV schema)
+  BENCHMARK_PERFORMANCE.md      methodology rationale, measured results, architectural claims
+  CURRENT_IMPLEMENTATION.md     what the running code does today
   DEVELOPER_GUIDE.md            this file
-  LOW_LATENCY_SYSTEMS.md        conceptual primer on the domain + terms
+  LOW_LATENCY_SYSTEMS.md        domain primer: latency, queuing, scheduling, observability
+  PLOT_GUIDE.md                 figure descriptions, axes, and plotting recipes
+  README.md                     project overview and quick start
 ```

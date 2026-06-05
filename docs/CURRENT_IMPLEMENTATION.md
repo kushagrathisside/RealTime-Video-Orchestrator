@@ -5,26 +5,35 @@ from the product vision so implementation status stays unambiguous.
 
 ## Repository Shape
 
-Rust workspace with eleven crates under `crates/`. All are listed as workspace
+Rust workspace with fifteen crates under `crates/`. All are listed as workspace
 members so `cargo test --workspace` covers every crate.
 
 | Crate | Responsibility |
 |---|---|
-| `rvo-bin` | Entrypoint, runtime wiring, SIGHUP reload |
+| `rvo-bin` | Entrypoint, runtime wiring, SIGHUP reload; also `rvo-tui` and `rvo-web` binaries |
 | `rvo-config` | YAML config loading and validation |
-| `rvo-camera` | OpenCV capture, mock camera, RTSP/URI source |
+| `rvo-camera` | OpenCV capture, RTSP/URI source |
 | `rvo-buffer` | Bounded circular frame buffer |
 | `rvo-detector` | Detector trait, synthetic detectors |
+| `rvo-remote` | `RemoteGrpcDetector` — non-blocking gRPC fan-out; persistent HTTP/2 channel per model node |
 | `rvo-signals` | Typed signal store |
 | `rvo-events` | Condition DSL, temporal event engine, publishers |
 | `rvo-scheduler` | Orchestration loop, load shedding |
 | `rvo-clips` | Clip job pipeline, JPEG encoder, JSON metadata |
 | `rvo-metrics` | Prometheus-style counters, HTTP endpoints |
-| `rvo-core` | Shared time helper, reserved frame module |
+| `rvo-core` | Shared time helper |
+| `rvo-testkit` | Test infrastructure: synthetic cameras, scripted/latency/failing detectors, pipeline builder |
+| `rvo-scenarios` | End-to-end integration scenarios using `rvo-testkit` |
+| `rvo-bench` | Load harness: 13 scenarios, HDR latency histograms, multi-run CSV output |
 
 ## Entrypoint
 
-`crates/rvo-bin/src/main.rs`. Startup order:
+`rvo-bin` ships three binaries:
+- `rvo` (`src/main.rs`) — headless CLI
+- `rvo-tui` (`src/bin/rvo-tui.rs`) — interactive terminal dashboard
+- `rvo-web` (`src/bin/rvo-web.rs`) — browser dashboard with live node-add API
+
+All three run the same runtime. `rvo` startup order:
 
 1. Read config path from `RVO_CONFIG` env var (default: `config/rvo.yaml`).
 2. Start metrics server on `127.0.0.1:9090`.
@@ -208,6 +217,29 @@ Encoder worker:
 2. Write each frame as `frame_NNNN.jpg` via `opencv::imgcodecs::imwrite`.
 3. Write `meta.json`: event type, timestamp ns, frame count, written count,
    per-frame timestamp array, clip window, encoding latency ms.
+
+## Remote Detectors
+
+`rvo-remote` implements `RemoteGrpcDetector`, which sources signals from an
+external gRPC model service instead of computing in-process.
+
+The gRPC client runs on a dedicated worker thread with its own Tokio runtime
+and a persistent HTTP/2 channel. `execute()` is non-blocking:
+
+1. Write newest frame into a single-slot mailbox (overwrite-newest).
+2. Return the most recently cached result (stamped with `ts_ns = now − result_age`).
+
+The worker thread loops: take newest frame → JPEG-encode → call `Detect()` →
+store result. The scheduler tick never touches the network.
+
+Staleness is handled by the existing `SignalStore` TTL: if the worker falls
+behind, the cached result expires naturally. Transient RPC errors are tolerated;
+after a consecutive-failure threshold the detector flips to
+`DetectorHealth::Failed` and the scheduler disables it permanently (until reload).
+
+Config: add a `remote_grpc` entry in `config/rvo.yaml`, or pass
+`--detector ENDPOINT=SIGNAL` on the CLI. The proto contract is
+`crates/rvo-remote/proto/detector.proto`.
 
 ## Event Publishers
 

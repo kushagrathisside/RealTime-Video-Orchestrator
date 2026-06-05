@@ -106,7 +106,7 @@ pub struct CsvWriter {
 
 const TIME_SERIES_HEADER: &str = "elapsed_ms,ticks_delta,execs_delta,skips_delta,events_delta,frame_drops_delta,tick_p50_ns,tick_p99_ns,exec_p50_ns,exec_p99_ns,staleness_p50_ns,staleness_p99_ns,frame_queue_depth";
 
-const SUMMARY_HEADER: &str = "scenario,detector_sleep_ms,input_fps,duration_secs,tick_p50_ns,tick_p99_ns,tick_p999_ns,tick_count,exec_p50_ns,exec_p99_ns,exec_p999_ns,total_ticks,total_execs,total_skips,total_events,total_frame_drops";
+const SUMMARY_HEADER: &str = "run_id,scenario,detector_sleep_ms,input_fps,actual_camera_fps,duration_secs,tick_p50_ns,tick_p99_ns,tick_p999_ns,tick_count,exec_p50_ns,exec_p99_ns,exec_p999_ns,total_ticks,total_execs,total_skips,total_events,total_frame_drops,effective_fps,frame_loss_rate";
 
 impl CsvWriter {
     pub fn create_time_series(path: &Path) -> std::io::Result<Self> {
@@ -168,19 +168,27 @@ impl CsvWriter {
 
     pub fn write_summary_row(
         &mut self,
+        run_id: u64,
         scenario: &str,
         detector_sleep_ms: u64,
         input_fps: f64,
+        actual_camera_fps: f64,
         duration_secs: u64,
         hist: &HistSummary,
         final_counters: &CounterSnapshot,
     ) -> std::io::Result<()> {
+        let effective_fps = final_counters.ticks as f64 / duration_secs as f64;
+        // Use actual measured camera fps so frame_loss_rate is accurate even when
+        // thread::sleep granularity limits the camera thread below its configured rate.
+        let frame_loss_rate = (actual_camera_fps - effective_fps).max(0.0);
         writeln!(
             self.inner,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{:.2},{:.2},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.2},{:.2}",
+            run_id,
             scenario,
             detector_sleep_ms,
             input_fps,
+            actual_camera_fps,
             duration_secs,
             hist.tick_p50_ns,
             hist.tick_p99_ns,
@@ -194,6 +202,8 @@ impl CsvWriter {
             final_counters.skips,
             final_counters.events,
             final_counters.frame_drops,
+            effective_fps,
+            frame_loss_rate,
         )
     }
 

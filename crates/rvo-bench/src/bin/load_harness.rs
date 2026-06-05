@@ -5,9 +5,10 @@
 //!
 //!   cargo build -p rvo-bench --bin load_harness --release
 //!
-//!   # Run all 14 scenarios (clears summary.csv first, 2s pause between runs)
+//!   # Run all scenarios (clears summary.csv first, 2s pause between runs)
 //!   ./target/release/load_harness --all
 //!   ./target/release/load_harness --all --duration-secs 60   # longer runs
+//!   ./target/release/load_harness --all --runs 3             # 3 repeats for variance
 //!
 //!   # Single scenario
 //!   ./target/release/load_harness --scenario load_shed
@@ -17,14 +18,17 @@
 //!
 //! ## HOL-blocking group (demonstrates tick latency tracks detector cost)
 //!
-//! | Scenario           | Detectors                        | Goal                          |
-//! |--------------------|----------------------------------|-------------------------------|
-//! | baseline           | none                             | pure scheduler overhead       |
-//! | inproc_low         | DummyDetector (~0ms)             | cheap in-process baseline     |
-//! | blocking_1ms       | LatencyDetector(1ms, Low, 30fps) | HOL blocking at 1ms           |
-//! | blocking_3ms       | LatencyDetector(3ms, Low, 30fps) | HOL blocking at 3ms           |
-//! | blocking_10ms      | LatencyDetector(10ms,Low, 30fps) | HOL blocking at 10ms          |
-//! | blocking_50ms      | LatencyDetector(50ms,Low, 30fps) | HOL blocking at 50ms          |
+//! max_fps=10000 (min_interval=0.1ms) ensures the detector runs on every tick,
+//! so tick_p50 directly measures detector latency rather than scheduler overhead.
+//!
+//! | Scenario           | Detectors                           | tick_p50 | Goal                          |
+//! |--------------------|-------------------------------------|----------|-------------------------------|
+//! | baseline           | none                                | ~5µs     | pure scheduler overhead       |
+//! | inproc_low         | DummyDetector (~0ms)                | ~5µs     | cheap in-process baseline     |
+//! | blocking_1ms       | LatencyDetector(1ms, Low, 10000fps) | ~1ms     | HOL blocking at 1ms           |
+//! | blocking_3ms       | LatencyDetector(3ms, Low, 10000fps) | ~3ms     | HOL blocking at 3ms           |
+//! | blocking_10ms      | LatencyDetector(10ms,Low, 10000fps) | ~10ms    | HOL blocking at 10ms          |
+//! | blocking_50ms      | LatencyDetector(50ms,Low, 10000fps) | ~50ms    | drain≈19.8/s < 30fps camera → ring-buffer loss |
 //!
 //! ## Load-shedding group (demonstrates shedding decouples tick from slow detector)
 //!
@@ -49,24 +53,32 @@
 //!   min_interval = 1ms, so the detector runs on every eligible tick.
 //!   5ms sleep + 0.5ms inter-tick sleep = 5.5ms/tick → effective tick rate ≈ 182/s.
 //!   Low cost = never shed (we want the tick to be genuinely slow, not backed off).
-//!   120fps < 182/s → no drops.   300fps > 182/s → channel saturates in <1s → drops.
+//!   The scheduler batch-drains the frame channel on every tick, so the bounded
+//!   channel (cap 64) stays shallow and never saturates. Frame loss happens in the
+//!   FrameBuffer ring buffer: frames that arrive faster than ticks are silently
+//!   overwritten before a detector ever reads them.
+//!   Overload is confirmed by: effective_fps = ticks/duration < camera_fps.
 //!
-//! ## fps reference group (baseline throughput with a fast detector)
+//! ## Throughput ceiling group (fast detector, camera fps sweeps across scheduler tick-rate ceiling)
 //!
-//! | Scenario           | Detectors    | Camera fps | Goal                          |
-//! |--------------------|--------------|------------|-------------------------------|
-//! | fps_30             | DummyDetector| 30 fps     | throughput baseline           |
-//! | fps_60             | DummyDetector| 60 fps     | 2× baseline                   |
-//! | fps_120            | DummyDetector| 120 fps    | 4× baseline                   |
-//! | fps_300            | DummyDetector| 300 fps    | 10× baseline (no drops)       |
+//! With DummyDetector the scheduler ticks at ~1756/s. Scenarios probe below and
+//! above that ceiling to show when the batch-drain ring buffer starts losing frames.
+//! frame_loss_rate is computed from actual_camera_fps (measured), not configured fps.
+//!
+//! | Scenario   | Camera fps | Expected outcome                              |
+//! |------------|------------|-----------------------------------------------|
+//! | fps_1000   | 1000 fps   | scheduler (1756/s) keeps up → 0 frame loss    |
+//! | fps_2000   | 2000 fps   | just over ceiling → moderate ring-buffer loss  |
+//! | fps_5000   | 5000 fps   | well over ceiling → heavy ring-buffer loss     |
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
-use crossbeam_channel::{bounded, Receiver};
+use crossbeam_channel::{bounded, Receiver, TrySendError};
 use rvo_bench::{CounterSnapshot, CsvWriter, HistSummary};
 use rvo_buffer::{Frame, FrameBuffer};
 use rvo_clips::ClipManager;
@@ -91,10 +103,9 @@ const ALL_SCENARIOS: &[&str] = &[
     "overload_threshold",
     "overload_moderate",
     "overload_severe",
-    "fps_30",
-    "fps_60",
-    "fps_120",
-    "fps_300",
+    "fps_1000",
+    "fps_2000",
+    "fps_5000",
 ];
 
 #[derive(Parser)]
@@ -120,6 +131,10 @@ struct Cli {
     /// How often to sample counter deltas for the time-series (milliseconds).
     #[arg(long, default_value_t = 1000)]
     sample_ms: u64,
+
+    /// How many times to repeat each scenario. Use ≥3 to get mean/stddev from the CSV.
+    #[arg(long, default_value_t = 1)]
+    runs: u64,
 
     /// Directory to write CSV files into.
     #[arg(long, default_value = "target/bench_results")]
@@ -211,10 +226,12 @@ fn detectors_for(scenario: &str) -> Vec<Box<dyn DetectorNode>> {
         // that a slow in-process detector directly delays every tick.
         "baseline" => vec![],
         "inproc_low" => vec![Box::new(DummyDetector)],
-        "blocking_1ms" => vec![latency_detector(1, DetectorCostHint::Low, 30.0)],
-        "blocking_3ms" => vec![latency_detector(3, DetectorCostHint::Low, 30.0)],
-        "blocking_10ms" => vec![latency_detector(10, DetectorCostHint::Low, 30.0)],
-        "blocking_50ms" => vec![latency_detector(50, DetectorCostHint::Low, 30.0)],
+        // max_fps=10000 (min_interval=0.1ms) → detector runs on every tick.
+        // tick_p50 directly measures the injected sleep, not scheduler overhead.
+        "blocking_1ms" => vec![latency_detector(1, DetectorCostHint::Low, 10_000.0)],
+        "blocking_3ms" => vec![latency_detector(3, DetectorCostHint::Low, 10_000.0)],
+        "blocking_10ms" => vec![latency_detector(10, DetectorCostHint::Low, 10_000.0)],
+        "blocking_50ms" => vec![latency_detector(50, DetectorCostHint::Low, 10_000.0)],
 
         // Load-shedding group: High cost + max_fps=60 → budget=33ms < 50ms runtime
         // → overrun fires on first execution → 500ms backoff → tick p99 near-baseline.
@@ -225,19 +242,19 @@ fn detectors_for(scenario: &str) -> Vec<Box<dyn DetectorNode>> {
 
         // Overload group: Low cost at 1000fps → detector runs every tick (1ms interval)
         // → each tick costs ~5ms → effective tick rate ≈ 182/s.  At 300/600 fps the
-        // camera outpaces the scheduler → bounded channel saturates → frame drops.
+        // camera outpaces the scheduler → FrameBuffer ring-buffer overwrites (not
+        // channel saturation — the scheduler batch-drains all pending frames per tick).
         // Low cost keeps the detector from being shed (we want slow ticks, not avoided ones).
         "overload_threshold" => vec![latency_detector(5, DetectorCostHint::Low, 1000.0)],
         "overload_moderate" => vec![latency_detector(5, DetectorCostHint::Low, 1000.0)],
         "overload_severe" => vec![latency_detector(5, DetectorCostHint::Low, 1000.0)],
 
-        // fps reference group: DummyDetector is µs-cost so tick rate stays ~2000/s,
-        // well above any fps tested here. No drops are expected — this is the fast-pipeline
-        // reference that shows the overload group's drops are caused by the slow detector.
-        "fps_30" => vec![Box::new(DummyDetector)],
-        "fps_60" => vec![Box::new(DummyDetector)],
-        "fps_120" => vec![Box::new(DummyDetector)],
-        "fps_300" => vec![Box::new(DummyDetector)],
+        // Throughput ceiling group: DummyDetector tick rate ≈1756/s.
+        // fps_1000 stays below the ceiling (no loss). fps_2000/5000 exceed it,
+        // causing ring-buffer overwrites at (actual_camera_fps - effective_fps) frames/s.
+        "fps_1000" => vec![Box::new(DummyDetector)],
+        "fps_2000" => vec![Box::new(DummyDetector)],
+        "fps_5000" => vec![Box::new(DummyDetector)],
 
         other => {
             eprintln!("[harness] unknown scenario '{}', using baseline", other);
@@ -249,10 +266,9 @@ fn detectors_for(scenario: &str) -> Vec<Box<dyn DetectorNode>> {
 /// Target synthetic camera fps for scenarios that need a camera feed.
 fn camera_fps_for(scenario: &str) -> Option<f64> {
     match scenario {
-        "fps_30" => Some(30.0),
-        "fps_60" => Some(60.0),
-        "fps_120" => Some(120.0),
-        "fps_300" => Some(300.0),
+        "fps_1000" => Some(1000.0),
+        "fps_2000" => Some(2000.0),
+        "fps_5000" => Some(5000.0),
         "overload_threshold" => Some(120.0),
         "overload_moderate" => Some(300.0),
         "overload_severe" => Some(600.0),
@@ -264,17 +280,90 @@ fn camera_fps_for(scenario: &str) -> Option<f64> {
 
 /// Check that the scenario's intended mechanism actually fired.
 ///
-/// Exits 1 with a diagnostic message when the intended condition never occurs.
-/// This prevents silent false-positive benchmark results where the numbers look
-/// plausible but the mechanism under test was never exercised.
-fn validate_scenario(scenario: &str, hist: &HistSummary, counters: &CounterSnapshot) {
+/// For scenarios where the mechanism under test must produce a specific outcome
+/// (load_shed, overload_moderate/severe), exits 1 with a diagnostic. For reference
+/// scenarios, prints OK or WARN without aborting so a full --all run still completes.
+///
+/// `duration_secs` is the measurement window (excludes warm-up) and is used to
+/// compute the effective tick rate for overload validation.
+fn validate_scenario(scenario: &str, hist: &HistSummary, counters: &CounterSnapshot, duration_secs: u64, actual_camera_fps: f64) {
     match scenario {
+        // ---- HOL-blocking group ------------------------------------------------
+        // Tick rate >> camera 30 fps for all sub-scenarios except blocking_50ms.
+        // Frame drops are always 0 for 1/3/10ms variants; the 50ms variant is a
+        // known exception where the drain rate falls below the camera rate.
+
+        "baseline" | "inproc_low" => {
+            let tick_p99_ms = hist.tick_p99_ns as f64 / 1e6;
+            if counters.frame_drops > 0 {
+                eprintln!(
+                    "\n[BENCH VALIDATION WARN] {}: {} unexpected frame drops \
+                     (tick rate ~2000/s >> camera 30fps — drops should not occur). \
+                     tick_p99={:.2}ms. Check system load or scheduler regression.",
+                    scenario, counters.frame_drops, tick_p99_ms
+                );
+            } else {
+                println!(
+                    "[BENCH VALIDATION OK] {}: 0 frame drops, tick_p99={:.2}ms",
+                    scenario, tick_p99_ms
+                );
+            }
+        }
+
+        "blocking_1ms" | "blocking_3ms" | "blocking_10ms" => {
+            let expected_ms = match scenario {
+                "blocking_1ms" => 1.0_f64,
+                "blocking_3ms" => 3.0_f64,
+                _ => 10.0_f64,
+            };
+            let tick_p50_ms = hist.tick_p50_ns as f64 / 1e6;
+            let tick_p99_ms = hist.tick_p99_ns as f64 / 1e6;
+            if counters.frame_drops > 0 {
+                eprintln!(
+                    "\n[BENCH VALIDATION WARN] {}: {} unexpected frame drops. tick_p50={:.2}ms",
+                    scenario, counters.frame_drops, tick_p50_ms
+                );
+            } else if tick_p50_ms < expected_ms * 0.5 || tick_p50_ms > expected_ms * 2.5 {
+                // tick_p50 should track the detector sleep. A large deviation means
+                // the detector isn't running every tick (check max_fps) or system jitter.
+                eprintln!(
+                    "\n[BENCH VALIDATION WARN] {}: tick_p50={:.2}ms expected ~{:.0}ms \
+                     (detector may not be running every tick). tick_p99={:.2}ms",
+                    scenario, tick_p50_ms, expected_ms, tick_p99_ms
+                );
+            } else {
+                println!(
+                    "[BENCH VALIDATION OK] {}: tick_p50={:.2}ms ≈ {}ms injected sleep, 0 frame drops",
+                    scenario, tick_p50_ms, expected_ms as u64
+                );
+            }
+        }
+
+        // blocking_50ms: effective tick rate ≈ 1/(50ms+0.5ms) ≈ 19.8/s, below the
+        // camera's 30fps. The batch-drain scheduler keeps the channel shallow (it
+        // drains all pending frames on each tick), but ~10 frames/s are silently
+        // overwritten in the FrameBuffer ring buffer. frame_drops stays 0 because
+        // the channel never fills. The scenario measures HOL tick latency, not drops.
+        "blocking_50ms" => {
+            let tick_p99_ms = hist.tick_p99_ns as f64 / 1e6;
+            let effective_fps = counters.ticks as f64 / duration_secs as f64;
+            println!(
+                "[BENCH VALIDATION NOTE] blocking_50ms: effective {:.1}/s < camera 30fps \
+                 (~{:.0} frames/s lost in ring buffer — expected for 50ms HOL scenario). \
+                 tick_p99={:.2}ms",
+                effective_fps,
+                30.0_f64 - effective_fps,
+                tick_p99_ms
+            );
+        }
+
+        // ---- Load-shedding group -----------------------------------------------
+        // With effective backoff the tick loop runs at ~2kHz (dominated by fast
+        // DummyDetector ticks between 500ms backoff windows). In a 30s measurement
+        // window we expect >> 5000 ticks. If the scheduler is instead running at
+        // the slow detector's pace (~20/s) — as happens when backoff never fires —
+        // total ticks stays around 600.
         "load_shed" => {
-            // With effective backoff the tick loop runs at ~2kHz (dominated by
-            // fast DummyDetector ticks between 500ms backoff windows). In a 30s
-            // measurement window we expect >> 5000 ticks. If the scheduler is
-            // instead running at the slow detector's pace (~20/s) — as happens
-            // when backoff never fires — total ticks stays around 600.
             let tick_p99_ms = hist.tick_p99_ns as f64 / 1e6;
             if counters.ticks < 5_000 {
                 eprintln!(
@@ -292,46 +381,101 @@ fn validate_scenario(scenario: &str, hist: &HistSummary, counters: &CounterSnaps
             );
         }
 
-        // overload_threshold is the reference scenario: 120fps < ~182/s drain rate,
-        // so zero drops is the CORRECT result. This arm must appear before the
-        // starts_with("overload_") catch-all — Rust matches top-to-bottom and
-        // "overload_threshold".starts_with("overload_") is true.
+        // ---- Overload group ----------------------------------------------------
+        // The scheduler batch-drains the frame channel on every tick (drains ALL
+        // pending frames via while-try_recv). This means the bounded channel never
+        // saturates, and frame_drops (channel-level) always stays 0. Frame loss
+        // instead occurs silently in the FrameBuffer ring buffer when frames are
+        // overwritten before a detector reads them.
+        //
+        // The correct overload signal is therefore the EFFECTIVE TICK RATE:
+        //   effective_fps = ticks / duration_secs
+        //
+        // If effective_fps < camera_fps, the scheduler cannot keep up and frames
+        // are lost in the ring buffer. If effective_fps >= camera_fps, every frame
+        // that arrived had a corresponding tick that could read it.
+        //
+        // overload_threshold is the REFERENCE: 120fps << ~182/s effective rate →
+        // scheduler keeps up → no frame loss. This arm must come before the
+        // starts_with("overload_") wildcard — Rust matches top-to-bottom.
         "overload_threshold" => {
-            if counters.frame_drops > 0 {
+            let effective_fps = counters.ticks as f64 / duration_secs as f64;
+            let camera_fps = camera_fps_for(scenario).unwrap_or(120.0);
+            if effective_fps < camera_fps {
                 eprintln!(
-                    "\n[BENCH VALIDATION WARN] overload_threshold: {} unexpected frame drops. \
-                     This reference scenario should not drop frames (120fps < ~182/s drain). \
-                     Check camera fps and effective tick rate.",
-                    counters.frame_drops
+                    "\n[BENCH VALIDATION WARN] overload_threshold: effective tick rate \
+                     {:.1}/s is below camera {:.0}fps — scheduler cannot keep up. \
+                     Expected: ~182/s >> 120fps. Check detector latency and system load.",
+                    effective_fps, camera_fps
                 );
             } else {
                 println!(
-                    "[BENCH VALIDATION OK] overload_threshold: 0 frame drops \
-                     (120fps below drain capacity of ~182/s, as expected)"
+                    "[BENCH VALIDATION OK] overload_threshold: effective {:.1}/s >= \
+                     camera {:.0}fps (scheduler keeps up, no frame loss, as expected)",
+                    effective_fps, camera_fps
                 );
             }
         }
 
         s if s.starts_with("overload_") => {
-            // The camera fps exceeds the effective tick rate (~182/s), so the bounded
-            // frame channel must saturate and drop frames. Zero drops means the
-            // drain rate was actually >= the feed rate — the slow detector is not
-            // running on every tick or the camera fps is too low.
-            if counters.frame_drops == 0 {
+            // Camera fps exceeds the effective tick rate (~182/s) → scheduler cannot
+            // read every frame → frames are overwritten in the FrameBuffer. Validated
+            // by checking that effective_fps (ticks/duration) < camera_fps.
+            let effective_fps = counters.ticks as f64 / duration_secs as f64;
+            let camera_fps = camera_fps_for(scenario).unwrap_or(300.0);
+            if effective_fps >= camera_fps {
                 eprintln!(
-                    "\n[BENCH VALIDATION FAIL] {}: zero frame drops. \
-                     Queue never saturated. Effective tick rate >= camera fps. \
-                     Check that the slow detector runs on every tick \
-                     (max_fps=1000, min_interval=1ms) and that camera fps exceeds 182/s.",
-                    s
+                    "\n[BENCH VALIDATION FAIL] {}: effective tick rate {:.1}/s >= \
+                     camera {:.0}fps — scheduler is keeping up, no frame loss. \
+                     Expected: ~182/s << {:.0}fps. Check that the slow detector \
+                     runs on every tick (max_fps=1000, min_interval=1ms).",
+                    s, effective_fps, camera_fps, camera_fps
                 );
                 std::process::exit(1);
             }
+            let loss_rate = camera_fps - effective_fps;
             println!(
-                "[BENCH VALIDATION OK] {}: {} frame drops in run \
-                 (bounded queue saturated as expected)",
-                s, counters.frame_drops
+                "[BENCH VALIDATION OK] {}: effective {:.1}/s < camera {:.0}fps \
+                 (~{:.0} frames/s lost in ring buffer, as expected)",
+                s, effective_fps, camera_fps, loss_rate
             );
+        }
+
+        // ---- Throughput ceiling group ------------------------------------------
+        // Scheduler tick rate ≈1756/s. fps_1000 should see no frame loss.
+        // fps_2000/5000 exceed the ceiling → ring-buffer overwrites.
+        // frame_loss_rate = actual_camera_fps - effective_fps (both measured).
+        s if s.starts_with("fps_") => {
+            let effective_fps = counters.ticks as f64 / duration_secs as f64;
+            let frame_loss = (actual_camera_fps - effective_fps).max(0.0);
+            if s == "fps_1000" {
+                if effective_fps < actual_camera_fps {
+                    eprintln!(
+                        "\n[BENCH VALIDATION WARN] {}: scheduler ({:.0}/s) below camera \
+                         ({:.0}/s) — expected no frame loss at 1000fps. Check system load.",
+                        s, effective_fps, actual_camera_fps
+                    );
+                } else {
+                    println!(
+                        "[BENCH VALIDATION OK] {}: effective {:.0}/s >= actual camera {:.0}/s \
+                         → 0 frame loss (below scheduler ceiling, as expected)",
+                        s, effective_fps, actual_camera_fps
+                    );
+                }
+            } else if effective_fps >= actual_camera_fps {
+                eprintln!(
+                    "\n[BENCH VALIDATION WARN] {}: scheduler ({:.0}/s) >= camera ({:.0}/s) — \
+                     expected frame loss above ceiling. Actual camera fps may be lower than \
+                     configured (sleep granularity).",
+                    s, effective_fps, actual_camera_fps
+                );
+            } else {
+                println!(
+                    "[BENCH VALIDATION OK] {}: effective {:.0}/s < camera {:.0}/s \
+                     → {:.0} frames/s lost in ring buffer (above scheduler ceiling, as expected)",
+                    s, effective_fps, actual_camera_fps, frame_loss
+                );
+            }
         }
 
         _ => {}
@@ -340,7 +484,7 @@ fn validate_scenario(scenario: &str, hist: &HistSummary, counters: &CounterSnaps
 
 // ---------- run -------------------------------------------------------------
 
-fn run(cli: &Cli) -> std::io::Result<()> {
+fn run(cli: &Cli, run_id: u64) -> std::io::Result<()> {
     std::fs::create_dir_all(&cli.out_dir)?;
     let stem = format!("{}_{}", cli.scenario, cli.duration_secs);
     let ts_path = cli.out_dir.join(format!("{}_timeseries.csv", stem));
@@ -371,13 +515,28 @@ fn run(cli: &Cli) -> std::io::Result<()> {
     let (mut scheduler, frame_tx, _sinks) = build_scheduler(detectors, Arc::clone(&frame_buffer));
 
     // Synthetic camera thread — sends at target fps with try_send (drops on full).
+    // frames_sent counts successful sends; used to compute actual_camera_fps at the end.
     let camera_fps = camera_fps_for(scenario).unwrap_or(30.0);
     let tx = frame_tx;
     let interval = Duration::from_secs_f64(1.0 / camera_fps);
+    let frames_sent = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let frames_sent_cam = Arc::clone(&frames_sent);
     thread::spawn(move || {
         let mut id = 0u64;
         loop {
-            let _ = tx.try_send(solid_frame(id));
+            match tx.try_send(solid_frame(id)) {
+                Ok(()) => {
+                    frames_sent_cam.fetch_add(1, Ordering::Relaxed);
+                }
+                // Channel full: scheduler is genuinely behind — count as a drop.
+                Err(TrySendError::Full(_)) => {
+                    METRICS.frame_drops.fetch_add(1, Ordering::Relaxed);
+                }
+                // Scheduler dropped its receiver (scenario ended). Exit so dead
+                // threads from previous scenarios do not pollute the next run's
+                // frame_drops counter via spurious Disconnected increments.
+                Err(TrySendError::Disconnected(_)) => break,
+            }
             id += 1;
             thread::sleep(interval);
         }
@@ -391,6 +550,7 @@ fn run(cli: &Cli) -> std::io::Result<()> {
     let mut last_sample = start;
     let mut last_counters = CounterSnapshot::capture();
     let mut in_warmup = true;
+    let mut frames_at_warmup_end: u64 = 0;
 
     println!("[harness] warming up for {}s ...", cli.warmup_secs);
 
@@ -407,6 +567,7 @@ fn run(cli: &Cli) -> std::io::Result<()> {
             // window, not warm-up. Without this, reported percentiles include
             // warm-up samples and total_ticks includes warm-up ticks.
             METRICS.reset();
+            frames_at_warmup_end = frames_sent.load(Ordering::Relaxed);
             last_sample = Instant::now();
             last_counters = CounterSnapshot::capture();
             println!("[harness] warm-up done, measuring ...");
@@ -445,6 +606,14 @@ fn run(cli: &Cli) -> std::io::Result<()> {
     let final_hist = HistSummary::capture();
     let final_counters = CounterSnapshot::capture();
 
+    // Compute actual camera fps from frames sent during the measurement window only.
+    // This is more accurate than the configured fps for scenarios where thread::sleep
+    // granularity limits the actual send rate (high-fps scenarios).
+    let actual_camera_fps = {
+        let frames_in_window = frames_sent.load(Ordering::Relaxed).saturating_sub(frames_at_warmup_end);
+        frames_in_window as f64 / cli.duration_secs as f64
+    };
+
     let detector_sleep_ms: u64 = match scenario.as_str() {
         "blocking_1ms" => 1,
         "blocking_3ms" => 3,
@@ -457,9 +626,11 @@ fn run(cli: &Cli) -> std::io::Result<()> {
     let input_fps = camera_fps_for(scenario).unwrap_or(30.0);
 
     sum_csv.write_summary_row(
+        run_id,
         scenario,
         detector_sleep_ms,
         input_fps,
+        actual_camera_fps,
         cli.duration_secs,
         &final_hist,
         &final_counters,
@@ -479,7 +650,7 @@ fn run(cli: &Cli) -> std::io::Result<()> {
     println!("[harness] summary     → {}", sum_path.display());
 
     // Self-validation: fail loudly if the intended mechanism did not fire.
-    validate_scenario(scenario, &final_hist, &final_counters);
+    validate_scenario(scenario, &final_hist, &final_counters, cli.duration_secs, actual_camera_fps);
 
     Ok(())
 }
@@ -494,50 +665,63 @@ fn main() {
     };
 
     let total = scenarios.len();
-    for (i, scenario) in scenarios.iter().enumerate() {
-        if total > 1 {
-            println!(
-                "\n══════════════════════════════════════════════\n \
-                 Scenario {}/{}: {}\n\
-                 ══════════════════════════════════════════════",
-                i + 1,
-                total,
-                scenario
-            );
-        }
-        // Build a per-scenario Cli with the scenario name overridden.
-        let per = Cli {
-            scenario: scenario.to_string(),
-            all: false,
-            duration_secs: cli.duration_secs,
-            warmup_secs: cli.warmup_secs,
-            sample_ms: cli.sample_ms,
-            out_dir: cli.out_dir.clone(),
-        };
-        // summary.csv must be cleared before the first scenario so we don't
-        // append to a stale file from a previous run.
-        if i == 0 {
-            let sum_path = per.out_dir.join("summary.csv");
-            if sum_path.exists() {
-                if let Err(e) = std::fs::remove_file(&sum_path) {
-                    eprintln!("[harness] warning: could not remove stale summary: {}", e);
-                }
+    let runs = cli.runs.max(1);
+
+    // Clear summary.csv once before the very first scenario of run 1 so stale
+    // data from a previous invocation does not accumulate.
+    {
+        let sum_path = cli.out_dir.join("summary.csv");
+        if sum_path.exists() {
+            if let Err(e) = std::fs::remove_file(&sum_path) {
+                eprintln!("[harness] warning: could not remove stale summary: {}", e);
             }
-        }
-        if let Err(err) = run(&per) {
-            eprintln!("[harness] error in {}: {}", scenario, err);
-            std::process::exit(1);
-        }
-        // Brief pause between scenarios so the OS scheduler settles.
-        if i + 1 < total {
-            std::thread::sleep(std::time::Duration::from_secs(2));
         }
     }
 
-    if total > 1 {
+    for run_id in 1..=runs {
+        if runs > 1 {
+            println!("\n══════════════════════════════════════════════");
+            println!(" Run {}/{}", run_id, runs);
+            println!("══════════════════════════════════════════════");
+        }
+        for (i, scenario) in scenarios.iter().enumerate() {
+            if total > 1 {
+                println!(
+                    "\n══════════════════════════════════════════════\n \
+                     Scenario {}/{}: {}{}\n\
+                     ══════════════════════════════════════════════",
+                    i + 1,
+                    total,
+                    scenario,
+                    if runs > 1 { format!("  [run {}/{}]", run_id, runs) } else { String::new() }
+                );
+            }
+            // Build a per-scenario Cli with the scenario name overridden.
+            let per = Cli {
+                scenario: scenario.to_string(),
+                all: false,
+                runs: 1,
+                duration_secs: cli.duration_secs,
+                warmup_secs: cli.warmup_secs,
+                sample_ms: cli.sample_ms,
+                out_dir: cli.out_dir.clone(),
+            };
+            if let Err(err) = run(&per, run_id) {
+                eprintln!("[harness] error in {}: {}", scenario, err);
+                std::process::exit(1);
+            }
+            // Brief pause between scenarios so the OS scheduler settles.
+            if i + 1 < total || run_id < runs {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+        }
+    }
+
+    if total > 1 || runs > 1 {
         println!(
-            "\n[harness] all {} scenarios done. Results in {}/",
+            "\n[harness] {} scenarios × {} run(s) done. Results in {}/",
             total,
+            runs,
             cli.out_dir.display()
         );
         println!("[harness] see docs/PLOT_GUIDE.md to generate figures.");
