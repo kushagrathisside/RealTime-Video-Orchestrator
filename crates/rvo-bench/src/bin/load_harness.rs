@@ -298,7 +298,6 @@ fn validate_scenario(
         // Tick rate >> camera 30 fps for all sub-scenarios except blocking_50ms.
         // Frame drops are always 0 for 1/3/10ms variants; the 50ms variant is a
         // known exception where the drain rate falls below the camera rate.
-
         "baseline" | "inproc_low" => {
             let tick_p99_ms = hist.tick_p99_ns as f64 / 1e6;
             if counters.frame_drops > 0 {
@@ -659,7 +658,13 @@ fn run(cli: &Cli, run_id: u64) -> std::io::Result<()> {
     println!("[harness] summary     → {}", sum_path.display());
 
     // Self-validation: fail loudly if the intended mechanism did not fire.
-    validate_scenario(scenario, &final_hist, &final_counters, cli.duration_secs, actual_camera_fps);
+    validate_scenario(
+        scenario,
+        &final_hist,
+        &final_counters,
+        cli.duration_secs,
+        actual_camera_fps,
+    );
 
     Ok(())
 }
@@ -702,7 +707,11 @@ fn main() {
                     i + 1,
                     total,
                     scenario,
-                    if runs > 1 { format!("  [run {}/{}]", run_id, runs) } else { String::new() }
+                    if runs > 1 {
+                        format!("  [run {}/{}]", run_id, runs)
+                    } else {
+                        String::new()
+                    }
                 );
             }
             // Build a per-scenario Cli with the scenario name overridden.

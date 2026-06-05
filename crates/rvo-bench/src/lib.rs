@@ -166,6 +166,7 @@ impl CsvWriter {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn write_summary_row(
         &mut self,
         run_id: u64,
