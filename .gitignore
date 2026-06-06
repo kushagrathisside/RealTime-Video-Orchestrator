@@ -46,3 +46,6 @@ clips/*
 
 # Paper draft — local, not for publication tracking
 publishpaper/
+
+# Documentation generation script and generated PDF
+docs/create_docs.py
