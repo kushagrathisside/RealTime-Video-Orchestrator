@@ -1,6 +1,9 @@
 # Rust build output
 /target/
 
+# Distribution and Release artifacts (Should never be committed to source)
+/dist/
+
 # Python/local environments
 /venv/
 /.venv/
@@ -42,10 +45,12 @@ Thumbs.db
 .env
 .env.*
 
-clips/*
+# Dynamic video evidence dumps
+clips/
 
 # Paper draft — local, not for publication tracking
 publishpaper/
 
 # Documentation generation script and generated PDF
 docs/create_docs.py
+dist/

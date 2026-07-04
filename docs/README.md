@@ -96,10 +96,10 @@ See [CURRENT_IMPLEMENTATION.md](CURRENT_IMPLEMENTATION.md) for the precise behav
 cargo build --release -p rvo-bin
 
 # Discover cameras
-./target/release/rvo --list-cameras
+./target/release/rvo-bin --list-cameras
 
 # Run headless
-RVO_CONFIG=config/rvo.yaml ./target/release/rvo
+RVO_CONFIG=config/rvo.yaml ./target/release/rvo-bin
 
 # Interactive TUI
 cargo run -p rvo-bin --bin rvo-tui
@@ -108,7 +108,7 @@ cargo run -p rvo-bin --bin rvo-tui
 cargo run -p rvo-bin --bin rvo-web
 
 # Point at an external model service
-./target/release/rvo --detector http://localhost:50051=PersonDetected
+./target/release/rvo-bin --detector http://localhost:50051=PersonDetected
 
 # Run benchmarks (5 runs × 30 s each → 65-row CSV)
 cargo build --release -p rvo-bench --bin load_harness
@@ -123,23 +123,23 @@ ls clips/
 
 ## Running a Deployment Package
 
-RVO can be distributed as a standalone, highly-optimized binary package (e.g., `rvo-deployment.zip`). You do not need Rust or the project source code to run it on a target server or edge device.
+RVO can be distributed as a standalone, highly-optimized binary package (_rvo-release-v1.zip_). You do not need Rust or the project source code to run it on a target server or edge device.
 
 1. **Prerequisites:**
    Ensure the target machine has the OpenCV system libraries installed. 
 
 2. **Unpack the deployment folder:**
-   Extract your deployment package, which contains the compiled executable (`rvo-bin`) and the configuration directory (`config/`).
-    ```
-       unzip rvo-deployment.zip
-       cd rvo-deployment
-    ```
+   Extract your deployment package, which contains the compiled executables (_rvo-bin_, _rvo-tui_, _rvo-web_), the gRPC service contract (_detector.proto_), and the configuration directory (_config/_).
+```sh
+unzip rvo-release-v1.zip
+cd rvo-deployment
+```
 
 3. **Start the engine:**
    Run the binary and point it to your configuration file. *(Note: Ensure your remote gRPC model services defined in the config are running so RVO can connect to them).*
-    ```
-       ./rvo-bin --config config/rvo.yaml
-    ```
+```sh
+./rvo-bin --config config/rvo.yaml
+```
 
 ## Documentation
 
