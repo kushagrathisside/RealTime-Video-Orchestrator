@@ -121,6 +121,26 @@ tail -f events.jsonl
 ls clips/
 ```
 
+## Running a Deployment Package
+
+RVO can be distributed as a standalone, highly-optimized binary package (e.g., `rvo-deployment.zip`). You do not need Rust or the project source code to run it on a target server or edge device.
+
+1. **Prerequisites:**
+   Ensure the target machine has the OpenCV system libraries installed. 
+
+2. **Unpack the deployment folder:**
+   Extract your deployment package, which contains the compiled executable (`rvo-bin`) and the configuration directory (`config/`).
+    ```
+       unzip rvo-deployment.zip
+       cd rvo-deployment
+    ```
+
+3. **Start the engine:**
+   Run the binary and point it to your configuration file. *(Note: Ensure your remote gRPC model services defined in the config are running so RVO can connect to them).*
+    ```
+       ./rvo-bin --config config/rvo.yaml
+    ```
+
 ## Documentation
 
 | Document | Purpose |
