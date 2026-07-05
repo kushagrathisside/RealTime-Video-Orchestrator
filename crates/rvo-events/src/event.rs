@@ -1,12 +1,24 @@
 use serde::Serialize;
+use std::borrow::Cow;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EventType {
-    DummyEvent,
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
+pub struct EventType(pub Cow<'static, str>);
+
+impl EventType {
+    #[allow(non_upper_case_globals)]
+    pub const DummyEvent: EventType = EventType(Cow::Borrowed("DummyEvent"));
+
+    pub fn new(s: String) -> Self {
+        EventType(Cow::Owned(s))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Event {
     pub event_type: EventType,
     /// Monotonic nanoseconds since scheduler start.

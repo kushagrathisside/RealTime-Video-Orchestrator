@@ -35,7 +35,7 @@ impl EventMachine {
         };
 
         Event {
-            event_type: self.def.event_type,
+            event_type: self.def.event_type.clone(),
             ts_ns: now_ns,
             confidence,
         }

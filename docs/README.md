@@ -66,7 +66,7 @@ Working Rust implementation, 15 crates, CI passing.
 - OpenCV camera capture with RTSP/URI support
 - Bounded frame channel (cap 5) + circular frame buffer (cap 300, ~10 s at 30 fps)
 - Time-gated, cost-aware, dependency-chained scheduler with HOL backoff (Medium 100 ms / High 500 ms)
-- Typed signal store (Dummy, MotionLevel, FacePresent, PersonDetected) with TTL freshness
+- Typed signal store (Dynamic string-based registry mapped to lock-free Custom slots, plus built-ins) with TTL freshness
 - Composable condition DSL (`All`/`Any` over typed signal predicates)
 - Temporal event engine (Idle → Potential → Confirmed → Cooldown)
 - Post-roll clip capture — JPEG frames + JSON metadata sidecar, best-effort, bounded thread

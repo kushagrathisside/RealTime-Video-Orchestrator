@@ -103,7 +103,7 @@ Defines the `DetectorNode` trait, `DetectorMeta`, `DetectorContext`, and `Detect
 Bridges RVO to external model services. `RemoteGrpcDetector` implements `DetectorNode` but sources its signals from a gRPC service (the `rvo.detect.v1.Detector` contract in `proto/detector.proto`) instead of computing them in-process. The gRPC client runs on a dedicated worker thread with its own Tokio runtime and a persistent HTTP/2 channel; `execute()` itself never blocks (see §5.9). This is how a camera frame reaches an external YOLO / image-pipeline service and comes back as a `PersonDetected` or `FacePresent` signal. Codegen uses `tonic-build` with a vendored `protoc`, so no system protobuf compiler is required.
 
 ### `rvo-signals`
-Defines `SignalType`, `Signal`, and `SignalStore`. The store is a typed blackboard: one slot per `SignalType`, O(1) read and write by type index, TTL freshness enforced at read time. Signals are the shared language between detectors and the event engine.
+Defines `SignalType`, `Signal`, `SignalStore`, and `SignalRegistry`. The store is a typed blackboard: one slot per `SignalType`, O(1) read and write by type index, TTL freshness enforced at read time. The `SignalRegistry` allows dynamic strings to be bound to generic `Custom` slots at startup without locking penalties on the hot path. Signals are the shared language between detectors and the event engine.
 
 ### `rvo-events`
 Implements the condition DSL (`All` / `Any` over `SignalPredicate`), `EventDefinition`, and the temporal state machine per event (`EventMachine`). Also contains `EventPublisher` and the JSON-lines file sink. The event engine consumes the signal store, not raw frames.

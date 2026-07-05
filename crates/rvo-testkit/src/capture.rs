@@ -48,7 +48,7 @@ impl EventCapture {
             event_type,
             self.collected
                 .iter()
-                .map(|event| event.event_type)
+                .map(|event| event.event_type.clone())
                 .collect::<Vec<_>>()
         );
     }

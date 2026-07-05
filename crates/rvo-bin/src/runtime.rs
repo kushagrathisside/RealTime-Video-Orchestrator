@@ -11,13 +11,7 @@ use rvo_signals::store::SignalType;
 /// Parse a signal-type name into a [`SignalType`]. Shared by detector and event
 /// wiring so both reject unknown names identically.
 fn parse_signal_type(name: &str) -> Result<SignalType, String> {
-    match name {
-        "Dummy" => Ok(SignalType::Dummy),
-        "MotionLevel" => Ok(SignalType::MotionLevel),
-        "FacePresent" => Ok(SignalType::FacePresent),
-        "PersonDetected" => Ok(SignalType::PersonDetected),
-        other => Err(format!("Unknown signal_type: {}", other)),
-    }
+    SignalType::from_name(name).ok_or_else(|| format!("Unknown signal_type: {}", name))
 }
 
 pub fn build_detectors(cfg: &RvoConfig) -> Result<Vec<Box<dyn DetectorNode>>, String> {
@@ -70,10 +64,7 @@ pub fn build_event_engine(cfg: &RvoConfig) -> Result<EventEngine, String> {
     let mut defs = Vec::new();
 
     for event in &cfg.events {
-        let event_type = match event.event_type.as_str() {
-            "DummyEvent" => EventType::DummyEvent,
-            other => return Err(format!("Unknown event type: {}", other)),
-        };
+        let event_type = EventType::new(event.event_type.clone());
 
         let signal_type = parse_signal_type(&event.signal_type)?;
 

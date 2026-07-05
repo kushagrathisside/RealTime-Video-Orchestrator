@@ -127,7 +127,7 @@ The signal store is a typed blackboard, not a queue. It answers:
 
 > What is the latest valid value of signal X right now?
 
-One slot per `SignalType`. Reads and writes are O(1) by type index. Freshness is
+One slot per `SignalType`. Reads and writes are O(1) by type index, with custom string aliases dynamically mapped to memory slots at startup. Freshness is
 enforced at read time via TTL: `signal.ts_ns + signal.ttl_ns < now_ns` → absent.
 
 A missing or stale signal is treated as absent — dependent detectors are skipped,

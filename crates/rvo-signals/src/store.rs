@@ -1,5 +1,7 @@
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-
+use std::sync::{OnceLock, RwLock};
 /// Typed signal slots in the signal store.
 ///
 /// Each variant maps 1-to-1 to a fixed slot in `SignalStore`. Add new variants
@@ -15,10 +17,19 @@ pub enum SignalType {
     FacePresent,
     /// 1 when at least one person is detected in the frame, 0 otherwise.
     PersonDetected,
+    /// Generic custom slots for user-defined signals mapped at runtime.
+    Custom0,
+    Custom1,
+    Custom2,
+    Custom3,
+    Custom4,
+    Custom5,
+    Custom6,
+    Custom7,
 }
 
 impl SignalType {
-    const COUNT: usize = 4;
+    pub const COUNT: usize = 12;
 
     /// All signal variants, for iteration (e.g. dashboards/snapshots).
     pub const ALL: [SignalType; Self::COUNT] = [
@@ -26,22 +37,47 @@ impl SignalType {
         SignalType::MotionLevel,
         SignalType::FacePresent,
         SignalType::PersonDetected,
+        SignalType::Custom0,
+        SignalType::Custom1,
+        SignalType::Custom2,
+        SignalType::Custom3,
+        SignalType::Custom4,
+        SignalType::Custom5,
+        SignalType::Custom6,
+        SignalType::Custom7,
     ];
 
     /// Stable wire/display name. Matches the strings accepted by config and the
-    /// gRPC contract.
-    pub fn name(self) -> &'static str {
+    /// gRPC contract. Returns a Cow so dynamic aliases can be returned.
+    pub fn name(self) -> Cow<'static, str> {
         match self {
-            SignalType::Dummy => "Dummy",
-            SignalType::MotionLevel => "MotionLevel",
-            SignalType::FacePresent => "FacePresent",
-            SignalType::PersonDetected => "PersonDetected",
+            SignalType::Dummy => Cow::Borrowed("Dummy"),
+            SignalType::MotionLevel => Cow::Borrowed("MotionLevel"),
+            SignalType::FacePresent => Cow::Borrowed("FacePresent"),
+            SignalType::PersonDetected => Cow::Borrowed("PersonDetected"),
+            custom => {
+                if let Some(custom_name) = SignalRegistry::get_name(custom) {
+                    Cow::Owned(custom_name)
+                } else {
+                    Cow::Owned(format!("{:?}", custom))
+                }
+            }
         }
     }
 
     /// Parse a signal type from its [`name`](Self::name). Inverse of `name()`.
     pub fn from_name(name: &str) -> Option<SignalType> {
-        SignalType::ALL.into_iter().find(|s| s.name() == name)
+        SignalRegistry::lookup(name)
+    }
+
+    pub(crate) fn from_name_built_in(name: &str) -> Option<SignalType> {
+        match name {
+            "Dummy" => Some(SignalType::Dummy),
+            "MotionLevel" => Some(SignalType::MotionLevel),
+            "FacePresent" => Some(SignalType::FacePresent),
+            "PersonDetected" => Some(SignalType::PersonDetected),
+            _ => None,
+        }
     }
 
     fn index(self) -> usize {
@@ -50,7 +86,77 @@ impl SignalType {
             SignalType::MotionLevel => 1,
             SignalType::FacePresent => 2,
             SignalType::PersonDetected => 3,
+            SignalType::Custom0 => 4,
+            SignalType::Custom1 => 5,
+            SignalType::Custom2 => 6,
+            SignalType::Custom3 => 7,
+            SignalType::Custom4 => 8,
+            SignalType::Custom5 => 9,
+            SignalType::Custom6 => 10,
+            SignalType::Custom7 => 11,
         }
+    }
+}
+
+#[derive(Default)]
+pub struct SignalRegistry {
+    name_to_type: HashMap<String, SignalType>,
+    type_to_name: HashMap<SignalType, String>,
+}
+
+impl SignalRegistry {
+    fn global() -> &'static RwLock<Self> {
+        static REGISTRY: OnceLock<RwLock<SignalRegistry>> = OnceLock::new();
+        REGISTRY.get_or_init(|| RwLock::new(SignalRegistry::default()))
+    }
+
+    pub fn register(name: &str) -> Result<SignalType, String> {
+        let mut reg = Self::global().write().unwrap();
+
+        if let Some(built_in) = SignalType::from_name_built_in(name) {
+            return Ok(built_in);
+        }
+
+        if let Some(&sig_type) = reg.name_to_type.get(name) {
+            return Ok(sig_type);
+        }
+
+        let next_idx = reg.name_to_type.len();
+        if next_idx >= 8 {
+            return Err(format!(
+                "Exceeded max limit of 8 custom signals. Cannot register '{}'",
+                name
+            ));
+        }
+
+        let sig_type = match next_idx {
+            0 => SignalType::Custom0,
+            1 => SignalType::Custom1,
+            2 => SignalType::Custom2,
+            3 => SignalType::Custom3,
+            4 => SignalType::Custom4,
+            5 => SignalType::Custom5,
+            6 => SignalType::Custom6,
+            7 => SignalType::Custom7,
+            _ => unreachable!(),
+        };
+
+        reg.name_to_type.insert(name.to_string(), sig_type);
+        reg.type_to_name.insert(sig_type, name.to_string());
+        Ok(sig_type)
+    }
+
+    pub fn get_name(sig_type: SignalType) -> Option<String> {
+        let reg = Self::global().read().unwrap();
+        reg.type_to_name.get(&sig_type).cloned()
+    }
+
+    pub fn lookup(name: &str) -> Option<SignalType> {
+        if let Some(built_in) = SignalType::from_name_built_in(name) {
+            return Some(built_in);
+        }
+        let reg = Self::global().read().unwrap();
+        reg.name_to_type.get(name).cloned()
     }
 }
 

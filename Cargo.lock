@@ -1641,6 +1641,7 @@ dependencies = [
 name = "rvo-config"
 version = "0.1.0"
 dependencies = [
+ "rvo-signals",
  "serde",
  "serde_yaml",
 ]

@@ -55,7 +55,7 @@ mod scenarios {
         let delta = after.delta_since(&before);
 
         pipeline.event_capture.assert_count(1);
-        let event = pipeline.event_capture.events()[0];
+        let event = pipeline.event_capture.events()[0].clone();
         assert!((event.confidence - 1.0).abs() <= 0.05);
         assert_eq!(delta.events_emitted, 1);
     }
