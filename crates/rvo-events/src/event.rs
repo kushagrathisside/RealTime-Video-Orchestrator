@@ -1,7 +1,9 @@
 use serde::Serialize;
 use std::borrow::Cow;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+use std::fmt;
+
+#[derive(Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct EventType(pub Cow<'static, str>);
 
@@ -15,6 +17,18 @@ impl EventType {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl fmt::Debug for EventType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl fmt::Display for EventType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
