@@ -89,12 +89,6 @@ fn default_clips_dir() -> String {
     "clips".to_string()
 }
 
-/// Known signal type strings. Must stay in sync with `SignalType` in
-/// `rvo-signals`.
-const KNOWN_SIGNAL_TYPES: &[&str] = &["Dummy", "MotionLevel", "FacePresent", "PersonDetected"];
-
-const KNOWN_EVENT_TYPES: &[&str] = &["DummyEvent"];
-
 impl RvoConfig {
     pub fn validate(&self) -> Result<(), String> {
         if self.detectors.is_empty() {
@@ -123,28 +117,16 @@ impl RvoConfig {
                     None => {
                         return Err("Detector 'remote_grpc' requires output_signal".into());
                     }
-                    Some(sig) if !KNOWN_SIGNAL_TYPES.contains(&sig.as_str()) => {
-                        return Err(format!(
-                            "Detector 'remote_grpc' has unknown output_signal '{}'. Known: {:?}",
-                            sig, KNOWN_SIGNAL_TYPES
-                        ));
+                    Some(sig) => {
+                        rvo_signals::store::SignalRegistry::register(sig)?;
                     }
-                    Some(_) => {}
                 }
             }
         }
 
         for e in &self.events {
-            if !KNOWN_EVENT_TYPES.contains(&e.event_type.as_str()) {
-                return Err(format!("Unknown event type: {}", e.event_type));
-            }
-
-            if !KNOWN_SIGNAL_TYPES.contains(&e.signal_type.as_str()) {
-                return Err(format!(
-                    "Unknown signal_type '{}' in event '{}'. Known: {:?}",
-                    e.signal_type, e.event_type, KNOWN_SIGNAL_TYPES
-                ));
-            }
+            // Register signal type dynamically if not built-in
+            rvo_signals::store::SignalRegistry::register(&e.signal_type)?;
 
             // duration_ms == 0 is valid: instant trigger, confidence = 1.0.
 

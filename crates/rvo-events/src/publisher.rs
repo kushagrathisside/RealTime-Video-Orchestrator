@@ -19,7 +19,7 @@ impl EventPublisher {
     }
 
     pub fn publish(&self, event: &Event) {
-        match self.tx.try_send(*event) {
+        match self.tx.try_send(event.clone()) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
                 METRICS.event_drops.fetch_add(1, Ordering::Relaxed);

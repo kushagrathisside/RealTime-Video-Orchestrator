@@ -147,7 +147,7 @@ a model runs slow.
 
 `rvo-signals` stores one slot per `SignalType` in a fixed `Vec<SignalSlot>`.
 
-Types: `Dummy`, `MotionLevel`, `FacePresent`, `PersonDetected`.
+Types: Built-ins (`Dummy`, `MotionLevel`, `FacePresent`, `PersonDetected`) and `Custom` slots (`Custom0`..`Custom7`) mapping dynamic strings via a `OnceLock` registry.
 
 Each slot uses a seqlock-style version counter. `upsert` takes `&mut self`
 so writes are already serialised by the borrow checker; the version check is

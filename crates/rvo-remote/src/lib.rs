@@ -240,7 +240,7 @@ fn run_worker(
         };
         let mut client = DetectorClient::new(channel);
 
-        let want = signal_type_name(output_signal);
+        let want = output_signal.name();
         let min_interval = Duration::from_secs_f64(1.0 / max_fps.max(0.1));
         let timeout = Duration::from_millis(timeout_ms);
 
@@ -309,16 +309,4 @@ fn encode_jpeg(img: &Mat) -> opencv::Result<Vec<u8>> {
     let params = Vector::<i32>::new();
     imgcodecs::imencode(".jpg", img, &mut buf, &params)?;
     Ok(buf.to_vec())
-}
-
-/// Map a [`SignalType`] to the wire string used in the proto contract.
-///
-/// Must stay in sync with the names accepted by `rvo-config` / `rvo-bin`.
-fn signal_type_name(s: SignalType) -> &'static str {
-    match s {
-        SignalType::Dummy => "Dummy",
-        SignalType::MotionLevel => "MotionLevel",
-        SignalType::FacePresent => "FacePresent",
-        SignalType::PersonDetected => "PersonDetected",
-    }
 }

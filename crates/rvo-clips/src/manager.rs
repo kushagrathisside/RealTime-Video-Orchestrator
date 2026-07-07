@@ -109,7 +109,7 @@ impl ClipManager {
 
         let pending = PendingJob {
             job: ClipJob {
-                event_type: event.event_type,
+                event_type: event.event_type.clone(),
                 event_ts_ns: event.ts_ns,
                 start_ts: start,
                 end_ts: end,
