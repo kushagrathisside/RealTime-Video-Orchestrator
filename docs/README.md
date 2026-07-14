@@ -154,3 +154,98 @@ cd rvo-deployment
 | [PLOT_GUIDE.md](PLOT_GUIDE.md) | Figure descriptions, axes, plotting recipes |
 | [LOW_LATENCY_SYSTEMS.md](LOW_LATENCY_SYSTEMS.md) | Domain primer: latency, queuing, scheduling, observability |
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/kushagrathisside/RealTime-Video-Orchestrator)
+
+
+---
+
+## Developer SDKs
+
+Pre-generated SDK bindings are available under the `sdk/` directory.
+
+```
+sdk/
+├── python/
+├── node/
+└── go/
+```
+
+The SDKs are generated from the gRPC contract:
+
+```
+crates/rvo-remote/proto/detector.proto
+```
+
+### Python SDK
+
+Generated files:
+
+```
+sdk/python/
+├── detector_pb2.py
+└── detector_pb2_grpc.py
+```
+
+Example:
+
+```python
+import grpc
+import detector_pb2
+import detector_pb2_grpc
+
+channel = grpc.insecure_channel("localhost:50051")
+
+stub = detector_pb2_grpc.DetectorStub(channel)
+
+response = stub.Detect(
+    detector_pb2.DetectRequest(
+        frame_jpeg=image_bytes,
+        frame_id=1
+    )
+)
+
+for signal in response.signals:
+    print(signal.signal_type, signal.value)
+```
+
+### TypeScript SDK
+
+Generated file:
+
+```
+sdk/node/
+└── detector.ts
+```
+
+Generated using `ts-proto` with gRPC service support.
+
+### Go SDK
+
+Generated files:
+
+```
+sdk/go/
+├── detector.pb.go
+└── detector_grpc.pb.go
+```
+
+### Parsing events.jsonl
+
+Events are written as JSON Lines (`.jsonl`) where each line represents one event object.
+
+Example:
+
+```python
+import json
+
+with open("events.jsonl") as file:
+    for line in file:
+        event = json.loads(line)
+        print(event)
+```
+
+The event contract is defined by:
+
+```
+schemas/event.schema.json
+```
+

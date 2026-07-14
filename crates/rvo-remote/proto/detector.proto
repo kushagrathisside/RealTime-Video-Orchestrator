@@ -1,7 +1,7 @@
 syntax = "proto3";
 
 package rvo.detect.v1;
-
+option go_package = "github.com/kushagrathisside/RealTime-Video-Orchestrator/sdk/go;detector";
 // A model service implements Detector: it receives a single encoded frame and
 // returns zero or more typed signals. This is the contract RVO uses to fan
 // frames out to external (e.g. Python) inference services.

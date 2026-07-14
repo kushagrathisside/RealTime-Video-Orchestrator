@@ -1,3 +1,4 @@
+
 # Rust build output
 /target/
 
@@ -54,3 +55,6 @@ publishpaper/
 # Documentation generation script and generated PDF
 docs/create_docs.py
 dist/
+# Node dependencies
+node_modules/
+
