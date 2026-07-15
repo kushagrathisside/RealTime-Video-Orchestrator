@@ -1,73 +1,39 @@
 # RVO Developer SDK
 
-This directory contains generated gRPC SDK bindings for the RVO Detector service.
+This directory contains the auto-generated gRPC SDK bindings for the RVO Detector service.
 
-Proto source:
-
+**Source of Truth:**
 ```text
 crates/rvo-remote/proto/detector.proto
-Generation Environment
-Generated using:
-protoc: 35.1
-Python: 3.13.7
-Node.js: v22.20.0
-Go: go1.26.5
+```
 
-Python SDK
+## How to Update the SDKs
 
-Install dependencies:
-python3 -m pip install grpcio grpcio-tools
+The SDKs (Go, Python, TypeScript) are generated automatically from the `.proto` file. **You do not need to manually install `protoc` or run individual generation commands.**
 
-Generate:
+### 1. The Automated CI Way (Recommended)
+Simply edit `detector.proto` and open a Pull Request. 
+The GitHub Actions CI pipeline will automatically compile the new SDK files and commit them directly to your PR branch to guarantee they are perfectly in sync.
 
-python3 -m grpc_tools.protoc \
--I crates/rvo-remote/proto \
---python_out=sdk/python \
---grpc_python_out=sdk/python \
-crates/rvo-remote/proto/detector.proto
+### 2. The Local Script Way
+If you prefer to generate them locally before pushing, use the unified generation script:
 
-Generated files:
+```bash
+# From the repository root
+./scripts/generate_sdks.sh
+```
 
-sdk/python/
-├── detector_pb2.py
-└── detector_pb2_grpc.py
+This script will use `npx` to fetch the exact `protoc` binaries required and compile all three languages deterministically.
 
-TypeScript SDK
+## Directory Structure
 
-Install generator:
-npm install --save-dev ts-proto
+* `sdk/go/` - Go module (`go.mod`) containing `detector.pb.go` and `detector_grpc.pb.go`.
+* `sdk/node/` - Node package (`package.json`) containing the TypeScript bindings (`detector.ts`).
+* `sdk/python/` - Python package (`requirements.txt`) containing `detector_pb2.py` and `detector_pb2_grpc.py`.
 
-Generate:
+## Testing
 
-protoc \
--I crates/rvo-remote/proto \
---plugin=./node_modules/.bin/protoc-gen-ts_proto \
---ts_proto_out=sdk/node \
---ts_proto_opt=outputServices=grpc-js \
-crates/rvo-remote/proto/detector.proto
-Generated files:
-sdk/node/
-└── detector.ts
-
-Go SDK
-Install generators:
-
-go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
-
-Generate:
-
-protoc \
--I crates/rvo-remote/proto \
---go_out=sdk/go \
---go-grpc_out=sdk/go \
---go_opt=paths=source_relative \
---go-grpc_opt=paths=source_relative \
-crates/rvo-remote/proto/detector.proto
-Generated files:
-sdk/go/
-├── detector.pb.go
-└── detector_grpc.pb.go
-
----
-
+To verify that the generated SDKs compile correctly in their native languages, run:
+```bash
+./sdk/test_sdks.sh
+```

@@ -1,5 +1,5 @@
 # RVO: Realtime Video Orchestration
-Version: v1.1.1 
+Version: v1.2.0
 
 RVO is low-latency scheduling infrastructure for realtime video AI. It ingests live streams, schedules models under latency budgets, routes results through bounded message paths, fuses outputs into temporal events, and extracts evidence clips — without the live path ever waiting for slow work.
 
