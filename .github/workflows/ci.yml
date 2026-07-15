@@ -72,9 +72,9 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.96.0
       - name: cargo-audit (RustSec advisory scan)
-        uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cargo install cargo-audit
+          cargo audit
 
   sdk-validation:
     name: SDK Validation and Test
@@ -107,6 +107,9 @@ jobs:
           go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
           go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+
+      - name: Install Python Protoc plugins
+        run: pip install grpcio-tools
 
       - name: Generate SDKs
         run: ./scripts/generate_sdks.sh
