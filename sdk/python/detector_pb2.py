@@ -24,13 +24,14 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0e\x64\x65tector.proto\x12\rrvo.detect.v1\"D\n\rDetectRequest\x12\x12\n\nframe_jpeg\x18\x01 \x01(\x0c\x12\x10\n\x08\x66rame_id\x18\x02 \x01(\x04\x12\r\n\x05ts_ns\x18\x03 \x01(\x04\";\n\x0e\x44\x65tectResponse\x12)\n\x07signals\x18\x01 \x03(\x0b\x32\x18.rvo.detect.v1.SignalOut\"?\n\tSignalOut\x12\x13\n\x0bsignal_type\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x04\x12\x0e\n\x06ttl_ns\x18\x03 \x01(\x04\x32Q\n\x08\x44\x65tector\x12\x45\n\x06\x44\x65tect\x12\x1c.rvo.detect.v1.DetectRequest\x1a\x1d.rvo.detect.v1.DetectResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0e\x64\x65tector.proto\x12\rrvo.detect.v1\"D\n\rDetectRequest\x12\x12\n\nframe_jpeg\x18\x01 \x01(\x0c\x12\x10\n\x08\x66rame_id\x18\x02 \x01(\x04\x12\r\n\x05ts_ns\x18\x03 \x01(\x04\";\n\x0e\x44\x65tectResponse\x12)\n\x07signals\x18\x01 \x03(\x0b\x32\x18.rvo.detect.v1.SignalOut\"?\n\tSignalOut\x12\x13\n\x0bsignal_type\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x04\x12\x0e\n\x06ttl_ns\x18\x03 \x01(\x04\x32Q\n\x08\x44\x65tector\x12\x45\n\x06\x44\x65tect\x12\x1c.rvo.detect.v1.DetectRequest\x1a\x1d.rvo.detect.v1.DetectResponseBIZGgithub.com/kushagrathisside/RealTime-Video-Orchestrator/sdk/go;detectorb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'detector_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
-  DESCRIPTOR._loaded_options = None
+  _globals['DESCRIPTOR']._loaded_options = None
+  _globals['DESCRIPTOR']._serialized_options = b'ZGgithub.com/kushagrathisside/RealTime-Video-Orchestrator/sdk/go;detector'
   _globals['_DETECTREQUEST']._serialized_start=33
   _globals['_DETECTREQUEST']._serialized_end=101
   _globals['_DETECTRESPONSE']._serialized_start=103

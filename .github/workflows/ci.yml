@@ -20,7 +20,7 @@ jobs:
       # Pinned to match rust-toolchain.toml so a floating-stable bump can't
       # break CI via newly-promoted clippy lints.
       - name: Install Rust (pinned)
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@1.96.0
         with:
           components: clippy, rustfmt
 
@@ -69,7 +69,58 @@ jobs:
       checks: write
     steps:
       - uses: actions/checkout@v4
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+      - name: Install cargo-audit
+        run: cargo binstall -y cargo-audit
       - name: cargo-audit (RustSec advisory scan)
-        uses: rustsec/audit-check@v2
+        run: cargo audit
+
+  sdk-validation:
+    name: SDK Validation and Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          go-version: '1.25'
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: '28.x'
+
+      - name: Install Go Protoc plugins
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+
+      - name: Install Python Protoc plugins
+        run: pip install grpcio-tools
+
+      - name: Generate SDKs
+        run: ./scripts/generate_sdks.sh
+
+      - name: Auto-commit generated SDKs
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: update generated SDKs"
+          file_pattern: "sdk/**"
+
+      - name: Test SDKs
+        run: ./sdk/test_sdks.sh
