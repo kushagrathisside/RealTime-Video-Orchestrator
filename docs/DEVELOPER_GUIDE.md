@@ -473,6 +473,137 @@ cargo test -- --test-threads=1  # if metric assertions are sensitive to parallel
 
 ---
 
+## Developer SDK and Event Schemas
+
+RVO provides pre-generated SDK bindings and formal schemas to simplify integration for Python, TypeScript, and Go developers.
+
+### gRPC SDKs
+
+The remote detector contract is defined in:
+
+`crates/rvo-remote/proto/detector.proto`
+
+Generated SDKs are available under:
+```
+sdk/
+├── python/
+├── node/
+└── go/
+```
+
+### Python SDK
+
+Generated files:
+```
+sdk/python/
+├── detector_pb2.py
+└── detector_pb2_grpc.py
+```
+Example usage:
+
+```python
+import grpc
+import detector_pb2
+import detector_pb2_grpc
+
+channel = grpc.insecure_channel("localhost:50051")
+
+stub = detector_pb2_grpc.DetectorStub(channel)
+
+response = stub.Detect(
+    detector_pb2.DetectRequest(
+        frame_jpeg=image_bytes,
+        frame_id=1
+    )
+)
+
+for signal in response.signals:
+    print(signal.signal_type, signal.value)
+```
+
+### TypeScript SDK
+
+Generated file:
+
+```
+sdk/node/
+└── detector.ts
+```
+
+Generation uses `ts-proto` with gRPC service generation.
+
+### Go SDK
+
+Generated files:
+```
+sdk/go/
+├── detector.pb.go
+└── detector_grpc.pb.go
+```
+Generation uses protoc with:
+- protoc-gen-go
+- protoc-gen-go-grpc
+
+### Event Schemas
+
+RVO also provides JSON Schemas describing the event log and clip metadata formats.
+
+```
+schemas/
+├── event.schema.json
+├── meta.schema.json
+├── models.py
+└── models.ts
+```
+
+These schemas can be used to validate `events.jsonl` output and `meta.json` clip metadata, or to generate language-specific models.
+
+The Go SDK requires the go_package option defined in:
+
+crates/rvo-remote/proto/detector.proto
+Event JSON Schemas
+RVO writes confirmed events as JSON Lines (events.jsonl).
+
+Example event:
+{
+  "event_type": "PersonDetected",
+  "ts_ns": 123456789,
+  "confidence": 0.95
+}
+Python consumption example:
+
+import json
+
+with open("events.jsonl") as file:
+    for line in file:
+        event = json.loads(line)
+        print(event["event_type"])
+Formal JSON schemas are available:
+
+schemas/
+├── event.schema.json
+└── meta.schema.json
+Reusable models:
+
+Python:
+schemas/models.py
+
+TypeScript:
+
+schemas/models.ts
+Clip Metadata Schema
+For every confirmed event, RVO generates evidence:
+
+clips/{event_type}_{timestamp}/
+├── frame_0000.jpg
+├── frame_0001.jpg
+└── meta.json
+
+The meta.json structure is documented in:
+schemas/meta.schema.json
+
+---
+
 ## 9. Repo Structure
 
 ### Proto file sync

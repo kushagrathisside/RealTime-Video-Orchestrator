@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RVO Clip Metadata Schema",
+  "description": "Metadata generated with evidence clips",
+  "type": "object",
+  "required": [
+    "event_type",
+    "event_ts_ns",
+    "clip_window_ns",
+    "frames_total",
+    "frames_written",
+    "frame_ts_ns",
+    "encode_ms"
+  ],
+  "properties": {
+    "event_type": {
+      "type": "string"
+    },
+    "event_ts_ns": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "clip_window_ns": {
+      "type": "object",
+      "required": [
+        "start",
+        "end"
+      ],
+      "properties": {
+        "start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "frames_total": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "frames_written": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "frame_ts_ns": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "encode_ms": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": true
+}
