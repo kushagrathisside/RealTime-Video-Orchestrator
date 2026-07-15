@@ -23,7 +23,7 @@ export const protobufPackage = "rvo.detect.v1";
 
 export interface DetectRequest {
   /** JPEG-encoded frame bytes (encoded by the RVO-side worker via OpenCV). */
-  frameJpeg: Uint8Array;
+  frameJpeg: Buffer;
   /** Monotonic frame id from the camera, for logging/correlation. */
   frameId: number;
   /** Optional capture timestamp in nanoseconds (0 if unknown). */
@@ -50,7 +50,7 @@ export interface SignalOut {
 }
 
 function createBaseDetectRequest(): DetectRequest {
-  return { frameJpeg: new Uint8Array(0), frameId: 0, tsNs: 0 };
+  return { frameJpeg: Buffer.alloc(0), frameId: 0, tsNs: 0 };
 }
 
 export const DetectRequest: MessageFns<DetectRequest> = {
@@ -79,7 +79,7 @@ export const DetectRequest: MessageFns<DetectRequest> = {
             break;
           }
 
-          message.frameJpeg = reader.bytes();
+          message.frameJpeg = Buffer.from(reader.bytes());
           continue;
         }
         case 2: {
@@ -110,10 +110,10 @@ export const DetectRequest: MessageFns<DetectRequest> = {
   fromJSON(object: any): DetectRequest {
     return {
       frameJpeg: isSet(object.frameJpeg)
-        ? bytesFromBase64(object.frameJpeg)
+        ? Buffer.from(bytesFromBase64(object.frameJpeg))
         : isSet(object.frame_jpeg)
-        ? bytesFromBase64(object.frame_jpeg)
-        : new Uint8Array(0),
+        ? Buffer.from(bytesFromBase64(object.frame_jpeg))
+        : Buffer.alloc(0),
       frameId: isSet(object.frameId)
         ? globalThis.Number(object.frameId)
         : isSet(object.frame_id)
@@ -146,7 +146,7 @@ export const DetectRequest: MessageFns<DetectRequest> = {
   },
   fromPartial<I extends Exact<DeepPartial<DetectRequest>, I>>(object: I): DetectRequest {
     const message = createBaseDetectRequest();
-    message.frameJpeg = object.frameJpeg ?? new Uint8Array(0);
+    message.frameJpeg = object.frameJpeg ?? Buffer.alloc(0);
     message.frameId = object.frameId ?? 0;
     message.tsNs = object.tsNs ?? 0;
     return message;
@@ -360,28 +360,11 @@ export const DetectorClient = makeGenericClientConstructor(DetectorService, "rvo
 };
 
 function bytesFromBase64(b64: string): Uint8Array {
-  if ((globalThis as any).Buffer) {
-    return Uint8Array.from((globalThis as any).Buffer.from(b64, "base64"));
-  } else {
-    const bin = globalThis.atob(b64);
-    const arr = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; ++i) {
-      arr[i] = bin.charCodeAt(i);
-    }
-    return arr;
-  }
+  return Uint8Array.from(globalThis.Buffer.from(b64, "base64"));
 }
 
 function base64FromBytes(arr: Uint8Array): string {
-  if ((globalThis as any).Buffer) {
-    return (globalThis as any).Buffer.from(arr).toString("base64");
-  } else {
-    const bin: string[] = [];
-    arr.forEach((byte) => {
-      bin.push(globalThis.String.fromCharCode(byte));
-    });
-    return globalThis.btoa(bin.join(""));
-  }
+  return globalThis.Buffer.from(arr).toString("base64");
 }
 
 type Builtin = Date | Function | Uint8Array | string | number | boolean | undefined;
