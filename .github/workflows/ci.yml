@@ -119,7 +119,7 @@ jobs:
       - name: Auto-commit generated SDKs
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore: update generated SDKs [skip ci]"
+          commit_message: "chore: update generated SDKs"
           file_pattern: "sdk/**"
 
       - name: Test SDKs
