@@ -1,0 +1,15 @@
+{
+  "name": "rvo-sdk",
+  "version": "1.0.0",
+  "description": "RVO generated SDK",
+  "main": "detector.js",
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.0.0",
+    "@grpc/grpc-js": "^1.10.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "ts-node": "^10.9.0",
+    "@types/node": "^20.0.0"
+  }
+}
