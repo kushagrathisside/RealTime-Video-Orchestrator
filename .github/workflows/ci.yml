@@ -69,6 +69,8 @@ jobs:
       checks: write
     steps:
       - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.96.0
       - name: cargo-audit (RustSec advisory scan)
         uses: rustsec/audit-check@v2
         with:
@@ -96,7 +98,9 @@ jobs:
           python-version: '3.13'
 
       - name: Install Protoc
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        uses: arduino/setup-protoc@v3
+        with:
+          version: '28.x'
 
       - name: Install Go Protoc plugins
         run: |
