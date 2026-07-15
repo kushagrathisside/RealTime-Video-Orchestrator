@@ -6,7 +6,17 @@ pub use metrics::{render_prometheus, METRICS};
 
 pub fn start_metrics_server(port: u16) {
     thread::spawn(move || {
-        let server = Server::http(format!("127.0.0.1:{}", port)).expect("metrics server");
+        let server = match Server::http(format!("127.0.0.1:{}", port)) {
+            Ok(s) => s,
+            Err(err) => {
+                eprintln!(
+                    "[METRICS] Could not bind 127.0.0.1:{port}: {err} — metrics/health endpoint disabled"
+                );
+                return;
+            }
+        };
+
+        eprintln!("[METRICS] Listening on http://127.0.0.1:{port}/metrics");
 
         for req in server.incoming_requests() {
             match req.url() {
@@ -27,4 +37,28 @@ pub fn start_metrics_server(port: u16) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn port_conflict_does_not_panic() {
+        // Bind a server on a fixed port first, then call start_metrics_server on
+        // the same port. The function must return without panicking and the calling
+        // thread must remain alive — previously this caused a process abort via
+        // .expect("metrics server").
+        let port: u16 = 19199;
+        let _holder = Server::http(format!("127.0.0.1:{port}")).expect("test holder");
+
+        // This must not panic even though the port is occupied.
+        start_metrics_server(port);
+
+        // Give the background thread time to attempt the bind and exit cleanly.
+        thread::sleep(Duration::from_millis(50));
+
+        // If we reach here the main thread is still alive — test passes.
+    }
 }

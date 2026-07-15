@@ -13,6 +13,7 @@ __pycache__/
 
 # Logs and local diagnostics
 *.log
+*.jsonl
 
 # Scripts directory — local tooling, not part of the repo
 scripts/
