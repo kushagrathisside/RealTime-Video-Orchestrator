@@ -1,4 +1,3 @@
-
 # Rust build output
 /target/
 
@@ -57,4 +56,3 @@ docs/create_docs.py
 dist/
 # Node dependencies
 node_modules/
-
